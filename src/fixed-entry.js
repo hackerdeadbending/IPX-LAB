@@ -61,6 +61,22 @@ export default {
       return originalFetch(input, nextInit);
     };
     try {
+      if (request.method === "POST") {
+        try {
+          const update = await request.clone().json();
+          const callback = update?.callback_query;
+          const token = env.TELEGRAM_BOT_TOKEN;
+          if (callback?.id && token) {
+            try {
+              await originalFetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ callback_query_id: callback.id })
+              });
+            } catch {}
+          }
+        } catch {}
+      }
       return await currentWorker.fetch(request, env, ctx);
     } finally {
       globalThis.fetch = originalFetch;
