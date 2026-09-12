@@ -1,5 +1,5 @@
 name = "ipx-lab"
-main = "src/entry.js"
+main = "src/fixed-entry.js"
 compatibility_date = "2026-09-12"
 
 [images]
