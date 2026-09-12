@@ -1,3 +1,6 @@
 name = "ipx-lab"
 main = "src/index.js"
 compatibility_date = "2026-09-12"
+
+[images]
+binding = "IMAGES"
