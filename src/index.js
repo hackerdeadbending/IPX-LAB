@@ -8,6 +8,7 @@ const MAIN_MENU = {
       { text: "🔄 Convert", callback_data: "convert" },
       { text: "✂️ Crop", callback_data: "crop" },
     ],
+    [{ text: "🧹 Remove Metadata", callback_data: "metadata" }],
     [{ text: "ℹ️ Image Info", callback_data: "info" }],
   ],
 };
@@ -185,7 +186,12 @@ async function transformImage(env, token, chatId, fileId, action) {
   let quality = 85;
   let transform = { fit: "scale-down" };
 
-  if (action.startsWith("resize:")) {
+  if (action === "metadata") {
+    // metadata=none explicitly discards invisible EXIF metadata, including GPS data.
+    transform = { fit: "scale-down", metadata: "none" };
+    outputFormat = "image/jpeg";
+    quality = 100;
+  } else if (action.startsWith("resize:")) {
     const parts = action.split(":");
     const width = Number(parts[1]);
     const height = parts[2] ? Number(parts[2]) : null;
@@ -228,7 +234,7 @@ async function transformImage(env, token, chatId, fileId, action) {
     throw new Error(`Unknown image action: ${operation}`);
   }
 
-  let image = env.IMAGES.input(source.body).transform(transform);
+  const image = env.IMAGES.input(source.body).transform(transform);
   const outputOptions = { format: outputFormat };
   if (quality !== undefined) outputOptions.quality = quality;
 
@@ -243,7 +249,7 @@ async function transformImage(env, token, chatId, fileId, action) {
     chatId,
     response,
     `ipx-lab-${label}.${extension}`,
-    `✅ ${label.charAt(0).toUpperCase() + label.slice(1)} complete`,
+    action === "metadata" ? "✅ Metadata removed" : `✅ ${label.charAt(0).toUpperCase() + label.slice(1)} complete`,
   );
 
   await sendMainMenu(token, chatId, "Ready for another operation:");
@@ -372,6 +378,10 @@ export default {
           await telegram("sendMessage", token, { chat_id: chatId, text: "🔄 Choose the output format:", reply_markup: CONVERT_MENU });
         } else if (action === "crop") {
           await telegram("sendMessage", token, { chat_id: chatId, text: "✂️ Choose a crop ratio:", reply_markup: CROP_MENU });
+        } else if (action === "metadata") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing image metadata..." });
+          await transformImage(env, token, chatId, fileId, "metadata");
         } else if (action === "info") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           await transformImage(env, token, chatId, fileId, "info");
