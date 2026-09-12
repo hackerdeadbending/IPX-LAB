@@ -109,6 +109,7 @@ async function localizedFetch(input, init, originalFetch) {
 }
 
 function isImageOperation(action) {
+  if (action === "resize:custom") return false;
   if (OPERATION_ACTIONS.has(action)) return true;
   return /^(resize|compress|convert|crop):/.test(action);
 }
