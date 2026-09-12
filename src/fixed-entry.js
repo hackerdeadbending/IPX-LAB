@@ -25,9 +25,18 @@ function patchTelegramRequest(input, init) {
   const url = typeof input === "string" ? input : input?.url || "";
   if (!url.startsWith("https://api.telegram.org/bot") || !init?.body) return init;
   const method = url.split("/").pop();
-  if (!["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return init;
 
   try {
+    if (method === "sendInvoice") {
+      const body = JSON.parse(init.body);
+      // Telegram does not allow recurring Stars subscription invoices to be sent
+      // directly with sendInvoice. Premium is sold as a one-time 30-day purchase.
+      delete body.subscription_period;
+      return { ...init, body: JSON.stringify(body) };
+    }
+
+    if (!["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return init;
+
     if (init.body instanceof FormData) {
       const form = init.body;
       const markupText = form.get("reply_markup");
@@ -48,7 +57,7 @@ function patchTelegramRequest(input, init) {
       return { ...init, body: JSON.stringify(body) };
     }
   } catch (error) {
-    console.error("IPX LAB Telegram menu patch error", error);
+    console.error("IPX LAB Telegram menu/payment patch error", error);
   }
   return init;
 }
