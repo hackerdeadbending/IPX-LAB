@@ -1,7 +1,14 @@
 import currentWorker from "./features.js";
 
+const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
+
 function addMenuButtons(replyMarkup) {
   if (!replyMarkup?.inline_keyboard) return replyMarkup;
+  const isMainMenu = replyMarkup.inline_keyboard.some((row) =>
+    row.some((button) => MAIN_ACTIONS.has(button.callback_data))
+  );
+  if (!isMainMenu) return replyMarkup;
+
   const rows = replyMarkup.inline_keyboard.map((row) => [...row]);
   const hasFilters = rows.some((row) => row.some((button) => button.callback_data === "filters"));
   const hasPremium = rows.some((row) => row.some((button) => button.callback_data === "premium"));
