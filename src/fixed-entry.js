@@ -77,7 +77,30 @@ export default {
           }
         } catch {}
       }
-      return await currentWorker.fetch(request, env, ctx);
+      try {
+        return await currentWorker.fetch(request, env, ctx);
+      } catch (error) {
+        console.error("IPX LAB worker error", error);
+        if (request.method === "POST" && env.TELEGRAM_BOT_TOKEN) {
+          try {
+            const update = await request.clone().json();
+            const chatId = update?.callback_query?.message?.chat?.id || update?.message?.chat?.id;
+            if (chatId) {
+              await originalFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  chat_id: chatId,
+                  text: `❌ Premium/payment error:\n\n${error?.message || "Unknown error"}`
+                })
+              });
+            }
+          } catch (reportError) {
+            console.error("IPX LAB error report failed", reportError);
+          }
+        }
+        return new Response("OK", { status: 200 });
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }
