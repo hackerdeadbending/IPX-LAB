@@ -62,6 +62,15 @@ const CROP_MENU = {
   ],
 };
 
+const SAFE_SHARE_MENU = {
+  inline_keyboard: [
+    [{ text: "🧹 Remove hidden metadata", callback_data: "safe-share:metadata" }],
+    [{ text: "📐 Limit long edge to 2000 px", callback_data: "safe-share:size" }],
+    [{ text: "🛡️ Apply both", callback_data: "safe-share:both" }],
+    [{ text: "↩️ Back", callback_data: "back" }],
+  ],
+};
+
 const pendingCustomResize = new Map();
 const CUSTOM_RESIZE_TTL_MS = 10 * 60 * 1000;
 
@@ -174,13 +183,23 @@ async function transformImage(env, token, chatId, fileId, action) {
     transform = { fit: "scale-down", metadata: "none" };
     outputFormat = "image/jpeg";
     quality = 100;
-  } else if (action === "safe-share") {
-    // One-tap public/share copy: remove hidden metadata and cap the long edge.
-    // Visible faces, plates, QR codes and text are not automatically redacted yet.
+  } else if (action === "safe-share:metadata") {
+    transform = { fit: "scale-down", metadata: "none" };
+    outputFormat = "image/jpeg";
+    quality = 100;
+    resultCaption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Visible faces, plates, QR codes and text were left untouched\n\nYour original photo was not modified.";
+    resultFilename = "ipx-lab-safe-share-metadata.jpg";
+  } else if (action === "safe-share:size") {
+    transform = { width: 2000, fit: "scale-down" };
+    outputFormat = "image/jpeg";
+    quality = 90;
+    resultCaption = "🛡️ Safe Share copy ready\n\n✓ Long edge limited to 2000 px\n✓ No visible privacy items were changed\n✓ Hidden metadata was not intentionally removed\n\nYour original photo was not modified.";
+    resultFilename = "ipx-lab-safe-share-size.jpg";
+  } else if (action === "safe-share:both") {
     transform = { width: 2000, fit: "scale-down", metadata: "none" };
     outputFormat = "image/jpeg";
     quality = 90;
-    resultCaption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Long edge limited to 2000 px\n✓ New JPEG share copy created\n\n⚠️ Check visible faces, addresses, plates, QR codes and private text before sharing.";
+    resultCaption = "🛡️ Safe Share copy ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Long edge limited to 2000 px\n✓ Visible faces, plates, QR codes and text were left untouched\n\nYour original photo was not modified.";
     resultFilename = "ipx-lab-safe-share.jpg";
   } else if (action.startsWith("resize:")) {
     const parts = action.split(":");
@@ -346,8 +365,23 @@ export default {
           await telegram("sendMessage", token, { chat_id: chatId, text: "✂️ Choose a crop ratio:", reply_markup: CROP_MENU });
         } else if (action === "safe-share") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🛡️ Preparing a safer share copy..." });
-          await transformImage(env, token, chatId, fileId, "safe-share");
+          await telegram("sendMessage", token, {
+            chat_id: chatId,
+            text: "🛡️ Safe Share\n\nNothing is changed automatically. You choose exactly what IPX LAB should do.\n\n⚠️ Faces, license plates, QR codes and visible text are never blurred or hidden by this menu.",
+            reply_markup: SAFE_SHARE_MENU,
+          });
+        } else if (action === "safe-share:metadata") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing only hidden metadata..." });
+          await transformImage(env, token, chatId, fileId, "safe-share:metadata");
+        } else if (action === "safe-share:size") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Creating a 2000 px share copy..." });
+          await transformImage(env, token, chatId, fileId, "safe-share:size");
+        } else if (action === "safe-share:both") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "🛡️ Applying your selected Safe Share options..." });
+          await transformImage(env, token, chatId, fileId, "safe-share:both");
         } else if (action === "metadata") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing image metadata..." });
