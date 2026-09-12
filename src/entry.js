@@ -126,6 +126,16 @@ function isCustomResizeText(text) {
   return /^(\d{2,5})(?:x(\d{2,5}))?$/.test(normalizeCustomResizeText(text));
 }
 
+function findImageMessage(message, maxDepth = 6) {
+  let current = message;
+  for (let depth = 0; current && depth < maxDepth; depth += 1) {
+    if (current.photo?.length) return current;
+    if (current.document?.mime_type?.startsWith("image/")) return current;
+    current = current.reply_to_message;
+  }
+  return null;
+}
+
 async function enforceOperationLimit(request, env, update) {
   const message = update?.message;
   const callback = update?.callback_query;
@@ -167,10 +177,13 @@ export default {
     const allowed = await enforceOperationLimit(request, env, update);
     if (!allowed) return new Response("OK", { status: 200 });
 
-    // Normalize custom size input before the base worker parses it.
-    // Examples: "50 50", "50x50", "50 x 50", "50 × 50" all become "50x50".
+    // Telegram keeps the original photo one level deeper when the user replies
+    // to our custom-size ForceReply prompt. Flatten that chain so the base worker
+    // can always resolve the actual photo/document file_id.
     if (update?.message?.text && isCustomResizeText(update.message.text)) {
       update.message.text = normalizeCustomResizeText(update.message.text);
+      const sourceMessage = findImageMessage(update.message.reply_to_message);
+      if (sourceMessage) update.message.reply_to_message = sourceMessage;
     }
 
     const originalFetch = globalThis.fetch;
