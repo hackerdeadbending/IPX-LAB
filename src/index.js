@@ -246,9 +246,11 @@ async function transformImage(env, token, chatId, fileId, action) {
 }
 
 function parseCustomResize(text) {
-  const match = String(text || "").trim().toLowerCase().replace(/\s+/g, "").match(/^(\d{2,5})(?:x(\d{2,5}))?$/);
+  const raw = String(text || "").trim().toLowerCase().replace(/,/g, ".").replace(/[×]/g, "x");
+  const match = raw.match(/^(\d{2,5})(?:\s*(?:x|\s)\s*(\d{2,5}))?$/);
   if (!match) return null;
-  const width = Number(match[1]); const height = match[2] ? Number(match[2]) : null;
+  const width = Number(match[1]);
+  const height = match[2] ? Number(match[2]) : null;
   if (width < 50 || width > 10000 || (height !== null && (height < 50 || height > 10000))) return null;
   return { width, height };
 }
@@ -328,7 +330,7 @@ export default {
           if (!fileId) throw new Error("Please send a photo first");
           await telegram("sendMessage", token, {
             chat_id: chatId,
-            text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nMinimum: 50 px · Maximum: 10000 px",
+            text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nYou can also enter: 50 50 or 50 x 50\n\nMinimum: 50 px · Maximum: 10000 px",
             reply_parameters: { message_id: query.message.message_id },
             reply_markup: {
               force_reply: true,
