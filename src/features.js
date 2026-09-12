@@ -1,5 +1,5 @@
 import currentWorker from "./entry.js";
-import { consumePhoto, registerUser, grantPremium, getAdminStats, isAdmin } from "./db.js";
+import { consumePhoto, registerUser, grantPremium, revokePremium, findUserByIdentifier, getAdminStats, getAdminTarget, setAdminTarget, clearAdminTarget, isAdmin } from "./db.js";
 
 const FILTERS = {
   "filter:cinema": { name: "Cinema", transform: { saturation: 0.82, contrast: 1.18, brightness: 0.96, gamma: 1.04, sharpen: 1 }, filename: "ipx-lab-cinema.jpg" },
@@ -66,10 +66,19 @@ async function adminPanel(env, token, chatId) {
   const stats = await getAdminStats(env);
   const lines = [`👑 IPX LAB ADMIN`, ``, `👥 Users: ${stats?.users ?? 0}`, `⭐ Premium: ${stats?.premium ?? 0}`, `📸 Photos today: ${stats?.todayPhotos ?? 0}`, `⚙️ Operations today: ${stats?.todayOperations ?? 0}`, ``, `Recent users:`];
   for (const u of (stats?.recent || [])) lines.push(`• ${u.first_name || "No name"}${u.username ? ` @${u.username}` : ""} — ${u.plan}${u.premium_until ? ` until ${u.premium_until.slice(0,10)}` : ""} — ID ${u.telegram_id}`);
-  await tg(token,"sendMessage",{chat_id:chatId,text:lines.join("\n"),reply_markup:{inline_keyboard:[[ {text:"⭐ Grant Premium 30d",callback_data:"admin:grant"} ]]}});
+  await tg(token,"sendMessage",{chat_id:chatId,text:lines.join("\n"),reply_markup:{inline_keyboard:[[ {text:"⭐ Grant Premium",callback_data:"admin:grant"},{text:"❌ Revoke Premium",callback_data:"admin:revoke"} ]]}});
   return true;
 }
-async function grantPrompt(token, chatId) { await tg(token,"sendMessage",{chat_id:chatId,text:"👑 Send the Telegram numeric ID of the user who should receive 30 days of Premium.\n\nExample: 123456789",reply_markup:{force_reply:true,input_field_placeholder:"Telegram ID"}}); }
+async function grantPrompt(token, chatId, revoke = false) {
+  await tg(token,"sendMessage",{chat_id:chatId,text:revoke ? "❌ Send the user's Telegram ID or @username to remove Premium." : "👑 Send the user's Telegram ID or @username.\n\nExample: 123456789 or @username",reply_markup:{force_reply:true,input_field_placeholder:"ID or @username"}});
+}
+async function durationMenu(token, chatId) {
+  await tg(token,"sendMessage",{chat_id:chatId,text:"⏱ Choose Premium duration:",reply_markup:{inline_keyboard:[[ {text:"7 days",callback_data:"admin:days:7"},{text:"30 days",callback_data:"admin:days:30"} ],[ {text:"90 days",callback_data:"admin:days:90"},{text:"365 days",callback_data:"admin:days:365"} ],[ {text:"♾️ Never expires",callback_data:"admin:days:infinite"} ],[ {text:"✏️ Custom days",callback_data:"admin:days:custom"} ],[ {text:"↩️ Cancel",callback_data:"admin:cancel"} ]]}});
+}
+async function customDaysPrompt(token, chatId) {
+  await tg(token,"sendMessage",{chat_id:chatId,text:"✏️ Enter the number of days (1–3650).",reply_markup:{force_reply:true,input_field_placeholder:"Number of days"}});
+}
+function targetLabel(user, fallback) { return user ? `${user.first_name || "User"}${user.username ? ` @${user.username}` : ""} (ID ${user.telegram_id})` : fallback; }
 function addPremiumAndFilters(markup, chatId, env) {
   if (!markup?.inline_keyboard) return markup;
   const rows = markup.inline_keyboard.map(r => [...r]);
@@ -127,7 +136,29 @@ export default {
       const text = update.message.text.trim();
       if (text === "/premium" || text === "⭐ Premium" || text === "⭐ Buy Premium") { if (token) await sendPremium(token, chatId, Number(env.PREMIUM_STARS_AMOUNT || 100)); return new Response("OK"); }
       if (text === "/admin") { if (token && await adminPanel(env,token,chatId)) return new Response("OK"); }
-      if (update.message.reply_to_message && /^\d{5,15}$/.test(text) && isAdmin(chatId,env)) { await grantPremium(env,text,30,0,"admin-grant"); if(token) await tg(token,"sendMessage",{chat_id:chatId,text:`✅ Premium granted to ${text} for 30 days.`}); return new Response("OK"); }
+      if (update.message.reply_to_message && isAdmin(chatId,env)) {
+        const target = await getAdminTarget(env, chatId);
+        const targetFromReply = text;
+        if (target) {
+          if (/^\d{5,15}$/.test(targetFromReply) || /^@?[A-Za-z0-9_]{3,32}$/.test(targetFromReply)) {
+            const user = await findUserByIdentifier(env, targetFromReply);
+            if (!user) { await tg(token,"sendMessage",{chat_id:chatId,text:"❌ User not found in IPX LAB. The user must have started the bot first."}); return new Response("OK"); }
+            await setAdminTarget(env, chatId, user.telegram_id);
+            await durationMenu(token, chatId);
+            return new Response("OK");
+          }
+          if (/^\d{1,4}$/.test(targetFromReply)) {
+            const days = Number(targetFromReply);
+            if (days >= 1 && days <= 3650) {
+              const until = await grantPremium(env,target,days,0,"admin-grant");
+              await clearAdminTarget(env,chatId);
+              await tg(token,"sendMessage",{chat_id:chatId,text:`✅ Premium granted to ${target} for ${days} days.\nExpires: ${until.slice(0,10)}`});
+              return new Response("OK");
+            }
+          }
+          if (/^(?:cancel|отмена)$/i.test(targetFromReply)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"↩️ Cancelled."}); return new Response("OK"); }
+        }
+      }
     }
     if (update?.callback_query) {
       const action = update.callback_query.data || "";
@@ -135,7 +166,19 @@ export default {
       if (FILTERS[action]) { try { await applyFilter(env,token,chatId,action); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } return new Response("OK"); }
       if (action === "premium") { await sendPremium(token,chatId,Number(env.PREMIUM_STARS_AMOUNT || 100)); return new Response("OK"); }
       if (action === "admin") { await adminPanel(env,token,chatId); return new Response("OK"); }
-      if (action === "admin:grant" && isAdmin(chatId,env)) { await grantPrompt(token,chatId); return new Response("OK"); }
+      if (action === "admin:grant" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await grantPrompt(token,chatId,false); return new Response("OK"); }
+      if (action === "admin:revoke" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await grantPrompt(token,chatId,true); return new Response("OK"); }
+      if (action === "admin:cancel" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"↩️ Cancelled."}); return new Response("OK"); }
+      if (action.startsWith("admin:days:") && isAdmin(chatId,env)) {
+        const target = await getAdminTarget(env,chatId);
+        if (!target) { await tg(token,"sendMessage",{chat_id:chatId,text:"❌ No target selected."}); return new Response("OK"); }
+        const choice = action.split(":").pop();
+        if (choice === "custom") { await customDaysPrompt(token,chatId); return new Response("OK"); }
+        const until = choice === "infinite" ? await grantPremium(env,target,null,0,"admin-grant") : await grantPremium(env,target,Number(choice),0,"admin-grant");
+        await clearAdminTarget(env,chatId);
+        await tg(token,"sendMessage",{chat_id:chatId,text:choice === "infinite" ? `♾️ Premium granted to ${target} permanently.` : `✅ Premium granted to ${target} for ${choice} days.\nExpires: ${until.slice(0,10)}`});
+        return new Response("OK");
+      }
     }
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (input, init) => interceptOutgoing(input, init, originalFetch, env);
