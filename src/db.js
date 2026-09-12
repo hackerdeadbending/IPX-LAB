@@ -13,18 +13,24 @@ function isAdmin(chatId, env) {
 async function ensureUser(db, chatId, user = {}) {
   const id = String(chatId);
   await db.prepare(
-    `INSERT INTO users (telegram_id, username, first_name)
-     VALUES (?, ?, ?)
+    `INSERT INTO users (telegram_id, username, first_name, language)
+     VALUES (?, ?, ?, ?)
      ON CONFLICT(telegram_id) DO UPDATE SET
        username = COALESCE(excluded.username, users.username),
        first_name = COALESCE(excluded.first_name, users.first_name),
+       language = COALESCE(excluded.language, users.language),
        updated_at = CURRENT_TIMESTAMP`
-  ).bind(id, user.username || null, user.first_name || null).run();
+  ).bind(
+    id,
+    user.username || null,
+    user.first_name || null,
+    user.language || null,
+  ).run();
 }
 
 async function getUser(db, chatId) {
   return db.prepare(
-    "SELECT telegram_id, username, first_name, plan, premium_until FROM users WHERE telegram_id = ?"
+    "SELECT telegram_id, username, first_name, language, plan, premium_until FROM users WHERE telegram_id = ?"
   ).bind(String(chatId)).first();
 }
 
