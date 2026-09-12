@@ -19,6 +19,7 @@ const RESIZE_MENU = {
       { text: "1200 px", callback_data: "resize:1200" },
       { text: "1600 px", callback_data: "resize:1600" },
     ],
+    [{ text: "✏️ Custom size", callback_data: "resize:custom" }],
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
 };
@@ -58,6 +59,11 @@ const CROP_MENU = {
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
 };
+
+// Short-lived state for the Custom size flow.
+// The source file_id is already owned by Telegram, so we only keep a small reference here.
+const pendingCustomResize = new Map();
+const CUSTOM_RESIZE_TTL_MS = 10 * 60 * 1000;
 
 async function telegram(method, token, body) {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -180,9 +186,20 @@ async function transformImage(env, token, chatId, fileId, action) {
   let transform = { fit: "scale-down" };
 
   if (action.startsWith("resize:")) {
-    const width = Number(action.split(":")[1]);
-    if (!Number.isInteger(width) || width < 50 || width > 10000) throw new Error("Invalid resize width");
-    transform = { width, fit: "scale-down" };
+    const parts = action.split(":");
+    const width = Number(parts[1]);
+    const height = parts[2] ? Number(parts[2]) : null;
+
+    if (!Number.isInteger(width) || width < 50 || width > 10000) {
+      throw new Error("Invalid resize width");
+    }
+    if (height !== null && (!Number.isInteger(height) || height < 50 || height > 10000)) {
+      throw new Error("Invalid resize height");
+    }
+
+    transform = height === null
+      ? { width, fit: "scale-down" }
+      : { width, height, fit: "fill" };
     outputFormat = "image/jpeg";
     quality = 88;
   } else if (action.startsWith("compress:")) {
@@ -232,6 +249,48 @@ async function transformImage(env, token, chatId, fileId, action) {
   await sendMainMenu(token, chatId, "Ready for another operation:");
 }
 
+function parseCustomResize(text) {
+  const normalized = String(text || "").trim().toLowerCase().replace(/\s+/g, "");
+  const match = normalized.match(/^(\d{2,5})(?:x(\d{2,5}))?$/);
+  if (!match) return null;
+
+  const width = Number(match[1]);
+  const height = match[2] ? Number(match[2]) : null;
+  if (width < 50 || width > 10000) return null;
+  if (height !== null && (height < 50 || height > 10000)) return null;
+
+  return { width, height };
+}
+
+async function handleCustomResizeInput(env, token, chatId, text) {
+  const pending = pendingCustomResize.get(chatId);
+  if (!pending || pending.expiresAt < Date.now()) {
+    pendingCustomResize.delete(chatId);
+    return false;
+  }
+
+  const size = parseCustomResize(text);
+  if (!size) {
+    await telegram("sendMessage", token, {
+      chat_id: chatId,
+      text: "❌ Invalid size.\n\nUse for example:\n• 1920x1080 — exact width × height\n• 1500 — custom width, height keeps the original proportion\n\nEnter a size from 50 to 10000 px.",
+    });
+    return true;
+  }
+
+  pendingCustomResize.delete(chatId);
+  const action = size.height === null
+    ? `resize:${size.width}`
+    : `resize:${size.width}:${size.height}`;
+
+  await telegram("sendMessage", token, {
+    chat_id: chatId,
+    text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...`,
+  });
+  await transformImage(env, token, chatId, pending.fileId, action);
+  return true;
+}
+
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") {
@@ -255,7 +314,18 @@ export default {
 
         const fileId = getSourceFileId(update.message);
         if (fileId) {
+          // A new photo replaces any unfinished custom-size request.
+          pendingCustomResize.delete(chatId);
           await sendPhotoMenu(token, chatId, fileId);
+        } else if (typeof update.message.text === "string") {
+          const handled = await handleCustomResizeInput(env, token, chatId, update.message.text);
+          if (!handled) {
+            await telegram("sendMessage", token, {
+              chat_id: chatId,
+              text: "👋 Welcome to IPX LAB Photo!\n\nSend me a photo and choose an operation.",
+              reply_markup: MAIN_MENU,
+            });
+          }
         } else {
           await telegram("sendMessage", token, {
             chat_id: chatId,
@@ -275,6 +345,7 @@ export default {
         if (!chatId) return textResponse("OK");
 
         if (action === "back") {
+          pendingCustomResize.delete(chatId);
           await telegram("sendMessage", token, {
             chat_id: chatId,
             text: "Choose an operation:",
@@ -284,7 +355,17 @@ export default {
         }
 
         if (action === "resize") {
-          await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Choose the maximum width:", reply_markup: RESIZE_MENU });
+          await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Choose the maximum width or set a custom size:", reply_markup: RESIZE_MENU });
+        } else if (action === "resize:custom") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          pendingCustomResize.set(chatId, {
+            fileId,
+            expiresAt: Date.now() + CUSTOM_RESIZE_TTL_MS,
+          });
+          await telegram("sendMessage", token, {
+            chat_id: chatId,
+            text: "✏️ Enter the size you want.\n\nExamples:\n• 1920x1080 — exact width × height\n• 1080x1920 — vertical\n• 1500x1500 — square\n• 1500 — custom width, height keeps the original proportion\n\nMinimum: 50 px · Maximum: 10000 px",
+          });
         } else if (action === "compress") {
           await telegram("sendMessage", token, { chat_id: chatId, text: "🗜️ Choose compression strength:", reply_markup: COMPRESS_MENU });
         } else if (action === "convert") {
