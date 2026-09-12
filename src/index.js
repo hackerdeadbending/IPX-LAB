@@ -292,6 +292,23 @@ async function handleCustomResizeInput(env, token, chatId, text) {
   return true;
 }
 
+async function showCallbackMenu(token, chatId, message, replyMarkup, fallbackText) {
+  const messageId = message?.message_id;
+  if (messageId) {
+    try {
+      await telegram("editMessageReplyMarkup", token, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: replyMarkup,
+      });
+      return;
+    } catch (error) {
+      console.error("IPX LAB edit menu error", error);
+    }
+  }
+  await telegram("sendMessage", token, { chat_id: chatId, text: fallbackText, reply_markup: replyMarkup });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return textResponse("IPX LAB Photo is online.");
@@ -344,12 +361,9 @@ export default {
 
         if (action === "back") {
           pendingCustomResize.delete(chatId);
-          await telegram("sendMessage", token, { chat_id: chatId, text: "Choose an operation:", reply_markup: MAIN_MENU });
-          return textResponse("OK");
-        }
-
-        if (action === "resize") {
-          await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Choose the maximum width or set a custom size:", reply_markup: RESIZE_MENU });
+          await showCallbackMenu(token, chatId, query.message, MAIN_MENU, "Choose an operation:");
+        } else if (action === "resize") {
+          await showCallbackMenu(token, chatId, query.message, RESIZE_MENU, "📐 Choose the maximum width or set a custom size:");
         } else if (action === "resize:custom") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           pendingCustomResize.set(chatId, { fileId, expiresAt: Date.now() + CUSTOM_RESIZE_TTL_MS });
@@ -358,18 +372,14 @@ export default {
             text: "✏️ Enter the size you want.\n\nExamples:\n• 1920x1080 — exact width × height\n• 1080x1920 — vertical\n• 1500x1500 — square\n• 1500 — custom width, height keeps the original proportion\n\nMinimum: 50 px · Maximum: 10000 px",
           });
         } else if (action === "compress") {
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🗜️ Choose compression strength:", reply_markup: COMPRESS_MENU });
+          await showCallbackMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression strength:");
         } else if (action === "convert") {
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🔄 Choose the output format:", reply_markup: CONVERT_MENU });
+          await showCallbackMenu(token, chatId, query.message, CONVERT_MENU, "🔄 Choose the output format:");
         } else if (action === "crop") {
-          await telegram("sendMessage", token, { chat_id: chatId, text: "✂️ Choose a crop ratio:", reply_markup: CROP_MENU });
+          await showCallbackMenu(token, chatId, query.message, CROP_MENU, "✂️ Choose a crop ratio:");
         } else if (action === "safe-share") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, {
-            chat_id: chatId,
-            text: "🛡️ Safe Share\n\nNothing is changed automatically. You choose exactly what IPX LAB should do.\n\n⚠️ Faces, license plates, QR codes and visible text are never blurred or hidden by this menu.",
-            reply_markup: SAFE_SHARE_MENU,
-          });
+          await showCallbackMenu(token, chatId, query.message, SAFE_SHARE_MENU, "🛡️ Safe Share");
         } else if (action === "safe-share:metadata") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing only hidden metadata..." });
@@ -389,24 +399,26 @@ export default {
         } else if (action === "info") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           await transformImage(env, token, chatId, fileId, "info");
-        } else if (/^(resize|compress|convert|crop):/.test(action)) {
+        } else if (action.startsWith("resize:") || action.startsWith("compress:") || action.startsWith("convert:") || action.startsWith("crop:")) {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "⏳ Processing your image..." });
           await transformImage(env, token, chatId, fileId, action);
         }
       }
+
+      return textResponse("OK");
     } catch (error) {
       console.error("IPX LAB error", error);
       const chatId = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
       if (chatId) {
+        const language = String(update.message?.from?.language_code || update.callback_query?.from?.language_code || "").toLowerCase().startsWith("ru") ? "ru" : "en";
         await telegram("sendMessage", token, {
           chat_id: chatId,
-          text: `⚠️ I couldn't process that image.\n\n${error instanceof Error ? error.message : "Unknown error"}`,
-          reply_markup: MAIN_MENU,
-        }).catch(() => {});
+          text: language === "ru"
+            ? `⚠️ Не удалось обработать изображение.\n\n${error.message || "Произошла ошибка."}`
+            : `⚠️ I couldn't process that image.\n\n${error.message || "Something went wrong."}`,
+        });
       }
+      return textResponse("OK");
     }
-
-    return textResponse("OK");
   },
 };
