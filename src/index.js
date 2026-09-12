@@ -139,6 +139,7 @@ async function sendTransformedFile(token, chatId, response, filename, caption) {
   const result = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
   const data = await result.json();
   if (!data.ok) throw new Error(data.description || "Telegram upload failed");
+  return data.result;
 }
 
 function conversion(action) {
@@ -236,7 +237,12 @@ async function transformImage(env, token, chatId, fileId, action) {
   const output = await pipeline.output({ format: outputFormat, ...(quality !== undefined ? { quality } : {}) });
   const response = output.response();
   if (!response.ok) throw new Error(`Image transformation failed (${response.status})`);
-  await sendTransformedFile(token, chatId, response, filename, caption);
+
+  // Make the transformed result the active source for the next operation.
+  const sent = await sendTransformedFile(token, chatId, response, filename, caption);
+  const nextFileId = sent?.document?.file_id || sent?.photo?.[sent.photo.length - 1]?.file_id;
+  if (!nextFileId) throw new Error("Telegram did not return the transformed file_id");
+  await rememberSource(env, chatId, nextFileId);
   await sendMainMenu(token, chatId, "Ready for another operation:");
 }
 
