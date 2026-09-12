@@ -4,3 +4,7 @@ compatibility_date = "2026-09-12"
 
 [images]
 binding = "IMAGES"
+[[d1_databases]]
+binding = "DB"
+database_name = "ipx-lab-db"
+database_id = "f08fdb87-7dd3-4e13-aa90-661117ca2b70"
