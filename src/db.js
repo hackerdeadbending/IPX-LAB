@@ -29,12 +29,9 @@ async function getUser(db, chatId) {
 }
 
 function hasPremium(user) {
-  if (!user) return false;
-  if (user.plan === "premium") {
-    if (!user.premium_until) return true;
-    return new Date(user.premium_until).getTime() > Date.now();
-  }
-  return false;
+  if (!user || user.plan !== "premium") return false;
+  if (!user.premium_until) return true;
+  return new Date(user.premium_until).getTime() > Date.now();
 }
 
 export async function registerUser(env, chatId, user = {}) {
@@ -55,12 +52,10 @@ export async function consumeOperation(env, chatId, action, user = {}) {
   const currentUser = await getUser(env.DB, id);
   const premium = hasPremium(currentUser);
   const limit = premium ? PREMIUM_DAILY_LIMIT : FREE_DAILY_LIMIT;
-  const date = utcDate();
-
   const row = await env.DB.prepare(
-    "SELECT id FROM usage WHERE telegram_id = ? AND action = ? AND created_at >= ?"
-  ).bind(id, action, `${date}T00:00:00.000Z`).all();
-  const used = Number(row?.results?.length || 0);
+    "SELECT COUNT(*) AS count FROM usage WHERE telegram_id = ? AND created_at >= ?"
+  ).bind(id, `${utcDate()}T00:00:00.000Z`).first();
+  const used = Number(row?.count || 0);
 
   if (used >= limit) {
     return { allowed: false, remaining: 0, limit, used, premium, admin: false };
@@ -86,10 +81,9 @@ export async function getUsage(env, chatId) {
   const user = await getUser(env.DB, id);
   const premium = hasPremium(user);
   const limit = premium ? PREMIUM_DAILY_LIMIT : FREE_DAILY_LIMIT;
-  const date = utcDate();
   const row = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM usage WHERE telegram_id = ? AND created_at >= ?"
-  ).bind(id, `${date}T00:00:00.000Z`).first();
+  ).bind(id, `${utcDate()}T00:00:00.000Z`).first();
   const used = Number(row?.count || 0);
 
   return { used, remaining: Math.max(0, limit - used), limit, premium, admin: false };
