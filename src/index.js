@@ -238,7 +238,6 @@ async function transformImage(env, token, chatId, fileId, action) {
   const response = output.response();
   if (!response.ok) throw new Error(`Image transformation failed (${response.status})`);
 
-  // Make the transformed result the active source for the next operation.
   const sent = await sendTransformedFile(token, chatId, response, filename, caption);
   const nextFileId = sent?.document?.file_id || sent?.photo?.[sent.photo.length - 1]?.file_id;
   if (!nextFileId) throw new Error("Telegram did not return the transformed file_id");
@@ -254,11 +253,11 @@ function parseCustomResize(text) {
   return { width, height };
 }
 
-async function handleCustomResize(env, token, chatId, text) {
+async function handleCustomResize(env, token, chatId, text, replyToMessage = null) {
   const size = parseCustomResize(text);
   if (!size) return false;
-  const fileId = await getRememberedSource(env, chatId);
-  if (!fileId) throw new Error("Please send a photo first");
+  const fileId = getSourceFileId(replyToMessage) || await getRememberedSource(env, chatId);
+  if (!fileId) throw new Error("Current photo is no longer available. Please send the photo again.");
   const action = size.height === null ? `resize:${size.width}` : `resize:${size.width}:${size.height}`;
   await telegram("sendMessage", token, { chat_id: chatId, text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...` });
   await transformImage(env, token, chatId, fileId, action);
@@ -304,7 +303,7 @@ export default {
           if (text === "/start" || text === "/help") {
             await telegram("sendMessage", token, { chat_id: chatId, text: "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." });
           } else if (parseCustomResize(text)) {
-            const handled = await handleCustomResize(env, token, chatId, text);
+            const handled = await handleCustomResize(env, token, chatId, text, update.message.reply_to_message);
             if (!handled) await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first." });
           } else {
             await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first. Your editing tools will appear after you upload it." });
@@ -327,7 +326,15 @@ export default {
           await showMenu(token, chatId, query.message, RESIZE_MENU, "📐 Choose the maximum width or custom size:");
         } else if (action === "resize:custom") {
           if (!fileId) throw new Error("Please send a photo first");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nMinimum: 50 px · Maximum: 10000 px" });
+          await telegram("sendMessage", token, {
+            chat_id: chatId,
+            text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nMinimum: 50 px · Maximum: 10000 px",
+            reply_parameters: { message_id: query.message.message_id },
+            reply_markup: {
+              force_reply: true,
+              input_field_placeholder: "50x50 or 1500",
+            },
+          });
         } else if (action === "compress") {
           await showMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression strength:");
         } else if (action === "convert") {
