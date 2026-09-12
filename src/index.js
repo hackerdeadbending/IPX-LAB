@@ -97,8 +97,10 @@ async function getRememberedSource(env, chatId) {
   return row?.file_id || null;
 }
 
+// The persisted source is the authoritative current image. Telegram callback
+// messages can still point at an older photo, so they must never override it.
 async function resolveSourceFileId(env, chatId, message) {
-  return getSourceFileId(message) || await getRememberedSource(env, chatId);
+  return await getRememberedSource(env, chatId) || getSourceFileId(message);
 }
 
 function formatBytes(bytes) {
@@ -247,7 +249,7 @@ async function transformImage(env, token, chatId, fileId, action) {
 
 function parseCustomResize(text) {
   const raw = String(text || "").trim().toLowerCase().replace(/,/g, ".").replace(/[×]/g, "x");
-  const match = raw.match(/^(\d{2,5})(?:\s*(?:x|\s)\s*(\d{2,5}))?$/);
+  const match = raw.match(/^(\d{2,5})(?:\s*(?:x|\s)\s(\d{2,5}))?$/);
   if (!match) return null;
   const width = Number(match[1]);
   const height = match[2] ? Number(match[2]) : null;
@@ -258,7 +260,8 @@ function parseCustomResize(text) {
 async function handleCustomResize(env, token, chatId, text, replyToMessage = null) {
   const size = parseCustomResize(text);
   if (!size) return false;
-  const fileId = getSourceFileId(replyToMessage) || await getRememberedSource(env, chatId);
+  // The current persisted source always wins over the message being replied to.
+  const fileId = await getRememberedSource(env, chatId) || getSourceFileId(replyToMessage);
   if (!fileId) throw new Error("Current photo is no longer available. Please send the photo again.");
   const action = size.height === null ? `resize:${size.width}` : `resize:${size.width}:${size.height}`;
   await telegram("sendMessage", token, { chat_id: chatId, text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...` });
@@ -300,16 +303,12 @@ export default {
         if (fileId) {
           await rememberSource(env, chatId, fileId);
           await sendPhotoMenu(token, chatId, fileId);
-        } else if (typeof update.message.text === "string") {
-          const text = update.message.text.trim();
-          if (text === "/start" || text === "/help") {
-            await telegram("sendMessage", token, { chat_id: chatId, text: "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." });
-          } else if (parseCustomResize(text)) {
-            const handled = await handleCustomResize(env, token, chatId, text, update.message.reply_to_message);
-            if (!handled) await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first." });
-          } else {
-            await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first. Your editing tools will appear after you upload it." });
-          }
+          return textResponse("OK");
+        }
+
+        if (update.message.text) {
+          const handled = await handleCustomResize(env, token, chatId, update.message.text, update.message.reply_to_message);
+          if (handled) return textResponse("OK");
         }
       }
 
@@ -320,7 +319,8 @@ export default {
         await telegram("answerCallbackQuery", token, { callback_query_id: query.id });
         if (!chatId) return textResponse("OK");
 
-        const fileId = await resolveSourceFileId(env, chatId, query.message);
+        // Always use the persisted current image first. Callback messages may be stale.
+        const fileId = await getRememberedSource(env, chatId) || getSourceFileId(query.message);
 
         if (action === "back") {
           await showMenu(token, chatId, query.message, MAIN_MENU, "Choose an operation:");
@@ -330,26 +330,25 @@ export default {
           if (!fileId) throw new Error("Please send a photo first");
           await telegram("sendMessage", token, {
             chat_id: chatId,
-            text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nYou can also enter: 50 50 or 50 x 50\n\nMinimum: 50 px · Maximum: 10000 px",
+            text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nMinimum: 50 px · Maximum: 10000 px",
             reply_parameters: { message_id: query.message.message_id },
-            reply_markup: {
-              force_reply: true,
-              input_field_placeholder: "50x50 or 1500",
-            },
+            reply_markup: { force_reply: true, input_field_placeholder: "50x50 or 1500" },
           });
         } else if (action === "compress") {
-          await showMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression strength:");
+          await showMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression quality:");
         } else if (action === "convert") {
           await showMenu(token, chatId, query.message, CONVERT_MENU, "🔄 Choose the output format:");
         } else if (action === "crop") {
-          await showMenu(token, chatId, query.message, CROP_MENU, "✂️ Choose a crop ratio:");
+          await showMenu(token, chatId, query.message, CROP_MENU, "✂️ Choose the crop ratio:");
         } else if (action === "safe-share") {
+          await showMenu(token, chatId, query.message, SAFE_SHARE_MENU, "🛡️ Choose a Safe Share option:");
+        } else if (action === "info") {
           if (!fileId) throw new Error("Please send a photo first");
-          await showMenu(token, chatId, query.message, SAFE_SHARE_MENU, "🛡️ Safe Share");
+          await transformImage(env, token, chatId, fileId, "info");
         } else if (action === "metadata") {
           if (!fileId) throw new Error("Please send a photo first");
           await transformImage(env, token, chatId, fileId, action);
-        } else if (["safe-share:metadata", "safe-share:size", "safe-share:both", "info"].includes(action)) {
+        } else if (["safe-share:metadata", "safe-share:size", "safe-share:both"].includes(action)) {
           if (!fileId) throw new Error("Please send a photo first");
           await transformImage(env, token, chatId, fileId, action);
         } else if (action.startsWith("resize:") || action.startsWith("compress:") || action.startsWith("convert:") || action.startsWith("crop:")) {
@@ -361,8 +360,14 @@ export default {
       return textResponse("OK");
     } catch (error) {
       console.error("IPX LAB error", error);
-      const chatId = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
-      if (chatId) await telegram("sendMessage", token, { chat_id: chatId, text: `⚠️ I couldn't process that image.\n\n${error.message || "Something went wrong."}` });
+      const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
+      if (chatId) {
+        try {
+          await telegram("sendMessage", token, { chat_id: chatId, text: `❌ ${error?.message || "Something went wrong"}` });
+        } catch (sendError) {
+          console.error("IPX LAB error notification failed", sendError);
+        }
+      }
       return textResponse("OK");
     }
   },
