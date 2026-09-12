@@ -31,10 +31,10 @@ async function source(env, chatId) {
   return row?.file_id || null;
 }
 async function sendPremium(token, chatId, amount) {
-  return tg(token, "sendInvoice", { chat_id: chatId, title: "IPX LAB Premium", description: "Unlimited daily photos and access to Pro Filters and future premium tools.", payload: `ipx-premium-30d-${chatId}-${Date.now()}`, currency: "XTR", prices: [{ label: "Premium — 30 days", amount }], subscription_period: 2592000 });
+  return tg(token, "sendInvoice", { chat_id: chatId, title: "IPX LAB Premium", description: "1000 image operations per day plus Premium features.", payload: `ipx-premium-30d-${chatId}-${Date.now()}`, currency: "XTR", prices: [{ label: "Premium — 30 days", amount }], subscription_period: 2592000 });
 }
 async function showFilters(token, chatId) {
-  await tg(token, "sendMessage", { chat_id: chatId, text: "🎬 Pro Filters\n\nTurn your photo into a cinematic, film or professional-looking image.", reply_markup: { inline_keyboard: [[{text:"🎬 Cinema",callback_data:"filter:cinema"},{text:"🌑 Dark Cinema",callback_data:"filter:dark-cinema"}],[{text:"🌅 Golden Hour",callback_data:"filter:golden"},{text:"🌃 Night Film",callback_data:"filter:night"}],[{text:"🟠 Warm Film",callback_data:"filter:warm"},{text:"🔵 Cold Film",callback_data:"filter:cold"}],[{text:"🎞 35mm",callback_data:"filter:35mm"},{text:"📽 Vintage Film",callback_data:"filter:vintage"}],[{text:"🖤 Noir",callback_data:"filter:noir"},{text:"🌫 Moody",callback_data:"filter:moody"}],[{text:"⚫ Black & White",callback_data:"filter:bw"},{text:"🎭 Dramatic B&W",callback_data:"filter:dramatic-bw"}],[{text:"↩️ Back",callback_data:"back"}]] } });
+  await tg(token, "sendMessage", { chat_id: chatId, text: "🎬 Filters\n\nGive your photo a cinematic, film or professional look.", reply_markup: { inline_keyboard: [[{text:"🎬 Cinema",callback_data:"filter:cinema"},{text:"🌑 Dark Cinema",callback_data:"filter:dark-cinema"}],[{text:"🌅 Golden Hour",callback_data:"filter:golden"},{text:"🌃 Night Film",callback_data:"filter:night"}],[{text:"🟠 Warm Film",callback_data:"filter:warm"},{text:"🔵 Cold Film",callback_data:"filter:cold"}],[{text:"🎞 35mm",callback_data:"filter:35mm"},{text:"📽 Vintage Film",callback_data:"filter:vintage"}],[{text:"🖤 Noir",callback_data:"filter:noir"},{text:"🌫 Moody",callback_data:"filter:moody"}],[{text:"⚫ Black & White",callback_data:"filter:bw"},{text:"🎭 Dramatic B&W",callback_data:"filter:dramatic-bw"}],[{text:"↩️ Back",callback_data:"back"}]] } });
 }
 async function applyFilter(env, token, chatId, action) {
   const preset = FILTERS[action];
@@ -52,7 +52,7 @@ async function applyFilter(env, token, chatId, action) {
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], preset.filename, {type:"image/jpeg"}));
   form.append("caption", `🎬 ${preset.name}\n\nFilter applied. You can continue editing this result.`);
-  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 More Filters",callback_data:"filters"},{text:"⭐ Premium",callback_data:"premium"} ]] }));
+  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ]] }));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token,"sendDocument"), {method:"POST", body:form});
   const data = await sent.json();
@@ -64,28 +64,44 @@ async function applyFilter(env, token, chatId, action) {
 async function adminPanel(env, token, chatId) {
   if (!isAdmin(chatId, env)) return false;
   const stats = await getAdminStats(env);
-  const lines = [`👑 IPX LAB ADMIN`, ``, `👥 Users: ${stats?.users ?? 0}`, `⭐ Premium: ${stats?.premium ?? 0}`, `📸 Photos today: ${stats?.todayPhotos ?? 0}`, ``, `Recent users:`];
+  const lines = [`👑 IPX LAB ADMIN`, ``, `👥 Users: ${stats?.users ?? 0}`, `⭐ Premium: ${stats?.premium ?? 0}`, `📸 Photos today: ${stats?.todayPhotos ?? 0}`, `⚙️ Operations today: ${stats?.todayOperations ?? 0}`, ``, `Recent users:`];
   for (const u of (stats?.recent || [])) lines.push(`• ${u.first_name || "No name"}${u.username ? ` @${u.username}` : ""} — ${u.plan}${u.premium_until ? ` until ${u.premium_until.slice(0,10)}` : ""} — ID ${u.telegram_id}`);
   await tg(token,"sendMessage",{chat_id:chatId,text:lines.join("\n"),reply_markup:{inline_keyboard:[[ {text:"⭐ Grant Premium 30d",callback_data:"admin:grant"} ]]}});
   return true;
 }
 async function grantPrompt(token, chatId) { await tg(token,"sendMessage",{chat_id:chatId,text:"👑 Send the Telegram numeric ID of the user who should receive 30 days of Premium.\n\nExample: 123456789",reply_markup:{force_reply:true,input_field_placeholder:"Telegram ID"}}); }
+function addPremiumAndFilters(markup, chatId, env) {
+  if (!markup?.inline_keyboard) return markup;
+  const rows = markup.inline_keyboard.map(r => [...r]);
+  const hasFilters = rows.some(row => row.some(b => b.callback_data === "filters"));
+  const hasPremium = rows.some(row => row.some(b => b.callback_data === "premium"));
+  if (!hasFilters || !hasPremium) rows.push([{text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"}]);
+  if (isAdmin(chatId, env) && !rows.some(row => row.some(b => b.callback_data === "admin"))) rows.push([{text:"👑 Admin",callback_data:"admin"}]);
+  return {inline_keyboard:rows};
+}
 async function interceptOutgoing(input, init, originalFetch, env) {
   const url = typeof input === "string" ? input : input?.url || "";
   if (!url.startsWith("https://api.telegram.org/bot") || !init?.body) return originalFetch(input, init);
   const method = url.split("/").pop();
   if (method !== "sendPhoto" && method !== "sendDocument" && method !== "sendMessage") return originalFetch(input, init);
   try {
-    if (init.body instanceof FormData) return originalFetch(input, init);
+    if (init.body instanceof FormData) {
+      const form = init.body;
+      const markupText = form.get("reply_markup");
+      if (typeof markupText === "string") {
+        const markup = JSON.parse(markupText);
+        const chatId = String(form.get("chat_id") || "");
+        const isMain = markup?.inline_keyboard?.some(row => row.some(b => ["resize","exact-size","compress","convert","crop","safe-share","metadata","info"].includes(b.callback_data)));
+        if (isMain) form.set("reply_markup", JSON.stringify(addPremiumAndFilters(markup, chatId, env)));
+      }
+      return originalFetch(input, init);
+    }
     const body = JSON.parse(init.body);
     const markup = typeof body.reply_markup === "string" ? JSON.parse(body.reply_markup) : body.reply_markup;
     if (!markup?.inline_keyboard) return originalFetch(input, init);
-    const isMain = markup.inline_keyboard.some(row => row.some(b => ["resize","exact-size","compress","convert","crop"].includes(b.callback_data)));
+    const isMain = markup.inline_keyboard.some(row => row.some(b => ["resize","exact-size","compress","convert","crop","safe-share","metadata","info"].includes(b.callback_data)));
     if (!isMain) return originalFetch(input, init);
-    const rows = markup.inline_keyboard.map(r => [...r]);
-    rows.push([{text:"🎬 Pro Filters",callback_data:"filters"},{text:"⭐ Premium",callback_data:"premium"}]);
-    if (isAdmin(body.chat_id, env)) rows.push([{text:"👑 Admin",callback_data:"admin"}]);
-    body.reply_markup = {inline_keyboard:rows};
+    body.reply_markup = addPremiumAndFilters(markup, String(body.chat_id), env);
     return originalFetch(input,{...init,body:JSON.stringify(body)});
   } catch { return originalFetch(input, init); }
 }
@@ -104,19 +120,14 @@ export default {
     if (payment && token) {
       const userId = update.message.from?.id || update.message.chat?.id;
       const until = await grantPremium(env,userId,30,payment.total_amount,payment.telegram_payment_charge_id);
-      await tg(token,"sendMessage",{chat_id:userId,text:`👑 Premium activated!\n\nYou now have unlimited daily photos.\nPremium is active until ${until.slice(0,10)}.`});
+      await tg(token,"sendMessage",{chat_id:userId,text:`👑 Premium activated!\n\nYou now have up to 1000 image operations per day.\nPremium is active until ${until.slice(0,10)}.`});
       return new Response("OK");
     }
     if (update?.message?.text) {
       const text = update.message.text.trim();
-      if (text === "/premium" || text === "⭐ Premium") { if (token) await sendPremium(token, chatId, Number(env.PREMIUM_STARS_AMOUNT || 100)); return new Response("OK"); }
+      if (text === "/premium" || text === "⭐ Premium" || text === "⭐ Buy Premium") { if (token) await sendPremium(token, chatId, Number(env.PREMIUM_STARS_AMOUNT || 100)); return new Response("OK"); }
       if (text === "/admin") { if (token && await adminPanel(env,token,chatId)) return new Response("OK"); }
       if (update.message.reply_to_message && /^\d{5,15}$/.test(text) && isAdmin(chatId,env)) { await grantPremium(env,text,30,0,"admin-grant"); if(token) await tg(token,"sendMessage",{chat_id:chatId,text:`✅ Premium granted to ${text} for 30 days.`}); return new Response("OK"); }
-      const incoming = sourceId(update.message);
-      if (incoming) {
-        const result = await consumePhoto(env,chatId,incoming,{username:from?.username,first_name:from?.first_name,language:from?.language_code});
-        if (!result.allowed) { if(token) await tg(token,"sendMessage",{chat_id:chatId,text:`🚫 Daily limit reached.\n\nFree plan: ${result.limit} different photos per day.\nYou have used ${result.used}/${result.limit}.\n\nYou can still use every editing function on each photo.\n⭐ Premium removes the daily photo limit.`}); return new Response("OK"); }
-      }
     }
     if (update?.callback_query) {
       const action = update.callback_query.data || "";
