@@ -1,5 +1,5 @@
-const FREE_DAILY_PHOTOS = 5;
-const PREMIUM_DAILY_PHOTOS = 1000000;
+const FREE_DAILY_OPERATIONS = 10;
+const PREMIUM_DAILY_OPERATIONS = 1000;
 
 function utcDate() { return new Date().toISOString().slice(0, 10); }
 function isAdmin(chatId, env) {
@@ -12,7 +12,7 @@ async function ensureCoreTables(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', stars_amount INTEGER, started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT, telegram_charge_id TEXT)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS daily_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, photo_date TEXT NOT NULL, file_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(telegram_id, photo_date, file_id))`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_daily_photos_user_date ON daily_photos(telegram_id, photo_date)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage(telegram_id, created_at)`).run();
 }
 
 async function ensureUser(db, chatId, user = {}) {
@@ -36,27 +36,24 @@ export async function registerUser(env, chatId, user = {}) {
   await ensureUser(env.DB, chatId, user);
 }
 
-// Individual operations are unlimited. Free usage is limited by unique uploaded photos/day.
 export async function consumeOperation(env, chatId, action, user = {}) {
-  return { allowed: true, skipped: true, action };
-}
-
-export async function consumePhoto(env, chatId, fileId, user = {}) {
   if (!env.DB) return { allowed: true, skipped: true };
   const id = String(chatId);
   await ensureUser(env.DB, id, user);
   if (isAdmin(id, env)) return { allowed: true, admin: true, premium: false, limit: Infinity, used: 0, remaining: Infinity };
   const currentUser = await getUser(env.DB, id);
   const premium = hasPremium(currentUser);
-  const limit = premium ? PREMIUM_DAILY_PHOTOS : FREE_DAILY_PHOTOS;
-  const date = utcDate();
-  const existing = await env.DB.prepare("SELECT id FROM daily_photos WHERE telegram_id=? AND photo_date=? AND file_id=?").bind(id, date, fileId).first();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM daily_photos WHERE telegram_id=? AND photo_date=?").bind(id, date).first();
+  const limit = premium ? PREMIUM_DAILY_OPERATIONS : FREE_DAILY_OPERATIONS;
+  const datePrefix = `${utcDate()}%`;
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM usage WHERE telegram_id=? AND created_at LIKE ?").bind(id, datePrefix).first();
   const used = Number(row?.count || 0);
-  if (existing) return { allowed: true, duplicate: true, used, remaining: Math.max(0, limit - used), limit, premium, admin: false };
   if (used >= limit) return { allowed: false, used, remaining: 0, limit, premium, admin: false };
-  await env.DB.prepare("INSERT INTO daily_photos (telegram_id, photo_date, file_id) VALUES (?, ?, ?)").bind(id, date, fileId).run();
+  await env.DB.prepare("INSERT INTO usage (telegram_id, action, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(id, String(action || "image")).run();
   return { allowed: true, used: used + 1, remaining: limit - used - 1, limit, premium, admin: false };
+}
+
+export async function consumePhoto(env, chatId, fileId, user = {}) {
+  return { allowed: true, skipped: true };
 }
 
 export async function grantPremium(env, chatId, days = 30, starsAmount = 0, chargeId = null) {
@@ -78,8 +75,8 @@ export async function getUsage(env, chatId) {
   if (isAdmin(chatId, env)) return { used: 0, remaining: Infinity, limit: Infinity, premium: false, admin: true };
   const user = await getUser(env.DB, chatId);
   const premium = hasPremium(user);
-  const limit = premium ? PREMIUM_DAILY_PHOTOS : FREE_DAILY_PHOTOS;
-  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM daily_photos WHERE telegram_id=? AND photo_date=?").bind(String(chatId), utcDate()).first();
+  const limit = premium ? PREMIUM_DAILY_OPERATIONS : FREE_DAILY_OPERATIONS;
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM usage WHERE telegram_id=? AND created_at LIKE ?").bind(String(chatId), `${utcDate()}%`).first();
   const used = Number(row?.count || 0);
   return { used, remaining: Math.max(0, limit - used), limit, premium, admin: false };
 }
@@ -90,8 +87,9 @@ export async function getAdminStats(env) {
   const totals = await env.DB.prepare("SELECT COUNT(*) AS users, SUM(CASE WHEN plan='premium' AND (premium_until IS NULL OR premium_until > CURRENT_TIMESTAMP) THEN 1 ELSE 0 END) AS premium FROM users").first();
   const today = utcDate();
   const todayPhotos = await env.DB.prepare("SELECT COUNT(*) AS count FROM daily_photos WHERE photo_date=?").bind(today).first();
+  const todayOperations = await env.DB.prepare("SELECT COUNT(*) AS count FROM usage WHERE created_at LIKE ?").bind(`${today}%`).first();
   const recent = await env.DB.prepare("SELECT telegram_id, username, first_name, plan, premium_until, created_at FROM users ORDER BY created_at DESC LIMIT 20").all();
-  return { users: Number(totals?.users || 0), premium: Number(totals?.premium || 0), todayPhotos: Number(todayPhotos?.count || 0), recent: recent?.results || [] };
+  return { users: Number(totals?.users || 0), premium: Number(totals?.premium || 0), todayPhotos: Number(todayPhotos?.count || 0), todayOperations: Number(todayOperations?.count || 0), recent: recent?.results || [] };
 }
 
-export { FREE_DAILY_PHOTOS, PREMIUM_DAILY_PHOTOS, isAdmin, hasPremium };
+export { FREE_DAILY_OPERATIONS, PREMIUM_DAILY_OPERATIONS, isAdmin, hasPremium };
