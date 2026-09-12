@@ -82,6 +82,38 @@ function translateReplyMarkup(replyMarkup, language) {
   };
 }
 
+function getSourceFileId(message) {
+  if (message?.photo?.length) return message.photo[message.photo.length - 1].file_id;
+  if (message?.document?.mime_type?.startsWith("image/")) return message.document.file_id;
+  return null;
+}
+
+async function persistSource(env, chatId, fileId) {
+  if (!env.DB || !chatId || !fileId) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (
+    telegram_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await env.DB.prepare(`INSERT INTO source_images (telegram_id, file_id, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id, updated_at=CURRENT_TIMESTAMP`)
+    .bind(String(chatId), fileId)
+    .run();
+}
+
+async function getPersistedSource(env, chatId) {
+  if (!env.DB || !chatId) return null;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (
+    telegram_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id = ?")
+    .bind(String(chatId)).first();
+  return row?.file_id || null;
+}
+
 async function localizedFetch(input, init, originalFetch) {
   const url = typeof input === "string" ? input : input?.url || "";
   if (!url.startsWith("https://api.telegram.org/bot")) return originalFetch(input, init);
@@ -127,17 +159,7 @@ function isCustomResizeText(text) {
   return /^(\d{2,5})(?:x(\d{2,5}))?$/.test(normalizeCustomResizeText(text));
 }
 
-function findImageMessage(message, maxDepth = 6) {
-  let current = message;
-  for (let depth = 0; current && depth < maxDepth; depth += 1) {
-    if (current.photo?.length) return current;
-    if (current.document?.mime_type?.startsWith("image/")) return current;
-    current = current.reply_to_message;
-  }
-  return null;
-}
-
-async function enforceOperationLimit(request, env, update) {
+async function enforceOperationLimit(env, update) {
   const message = update?.message;
   const callback = update?.callback_query;
   const chatId = message?.chat?.id || callback?.message?.chat?.id;
@@ -147,20 +169,36 @@ async function enforceOperationLimit(request, env, update) {
   const chatKey = String(chatId);
   chatLanguages.set(chatKey, language);
   chatLanguages.set("__last__", language);
+
   try {
-    await registerUser(env, chatId, { username: from?.username, first_name: from?.first_name, language });
+    await registerUser(env, chatId, {
+      username: from?.username,
+      first_name: from?.first_name,
+      language,
+    });
+
     let action = null;
     if (callback?.data && isImageOperation(callback.data)) action = callback.data;
     else if (message?.text && isCustomResizeText(message.text)) action = "resize:custom";
     if (!action) return true;
-    const result = await consumeOperation(env, chatId, action, { username: from?.username, first_name: from?.first_name, language });
+
+    const result = await consumeOperation(env, chatId, action, {
+      username: from?.username,
+      first_name: from?.first_name,
+      language,
+    });
     if (result.allowed) return true;
+
     const token = env.TELEGRAM_BOT_TOKEN;
     if (token) {
       const text = language === "ru"
         ? `🚫 Дневной лимит исчерпан.\n\nБесплатный план: ${result.limit} операций с изображениями в день.\nИспользовано: ${result.used}/${result.limit}.\n\nPremium даёт до 1000 операций в день.`
         : `🚫 Daily limit reached.\n\nFree plan: ${result.limit} image operations per day.\nYou have used ${result.used}/${result.limit}.\n\nPremium gives you 1000 operations per day.`;
-      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }) });
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text }),
+      });
     }
     return false;
   } catch (error) {
@@ -172,25 +210,73 @@ async function enforceOperationLimit(request, env, update) {
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") return baseWorker.fetch(request, env, ctx);
+
     const cloned = request.clone();
     let update;
-    try { update = await cloned.json(); } catch { return baseWorker.fetch(request, env, ctx); }
-    const allowed = await enforceOperationLimit(request, env, update);
+    try {
+      update = await cloned.json();
+    } catch {
+      return baseWorker.fetch(request, env, ctx);
+    }
+
+    const message = update?.message;
+    const chatId = message?.chat?.id;
+    const incomingFileId = getSourceFileId(message);
+
+    // Persist the newest uploaded image before the main worker handles anything.
+    // This is the authoritative current source for custom resize and chained edits.
+    if (chatId && incomingFileId) {
+      try {
+        await persistSource(env, chatId, incomingFileId);
+      } catch (error) {
+        console.error("IPX LAB source persistence error", error);
+      }
+    }
+
+    const allowed = await enforceOperationLimit(env, update);
     if (!allowed) return new Response("OK", { status: 200 });
 
-    // Telegram keeps the original photo one level deeper when the user replies
-    // to our custom-size ForceReply prompt. Flatten that chain so the base worker
-    // can always resolve the actual photo/document file_id.
-    if (update?.message?.text && isCustomResizeText(update.message.text)) {
-      update.message.text = normalizeCustomResizeText(update.message.text);
-      const sourceMessage = findImageMessage(update.message.reply_to_message);
-      if (sourceMessage) update.message.reply_to_message = sourceMessage;
+    const language = chatId ? (chatLanguages.get(String(chatId)) || "en") : "en";
+
+    // Handle the greeting here so /start and /help always use the user's Telegram language.
+    if (message?.text && (message.text.trim() === "/start" || message.text.trim() === "/help")) {
+      const token = env.TELEGRAM_BOT_TOKEN;
+      if (token) {
+        const text = language === "ru"
+          ? "👋 Добро пожаловать в IPX LAB Photo!\n\n📸 Отправьте мне фото, и инструменты редактирования появятся автоматически."
+          : "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically.";
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        });
+      }
+      return new Response("OK", { status: 200 });
+    }
+
+    if (message?.text && isCustomResizeText(message.text)) {
+      const normalized = normalizeCustomResizeText(message.text);
+      update.message.text = normalized;
+
+      // ForceReply points to the prompt message, not the original photo. Always
+      // recover the actual current image from D1 first, with reply-chain fallback.
+      const persistedFileId = await getPersistedSource(env, chatId);
+      if (persistedFileId) {
+        update.message.reply_to_message = {
+          ...(update.message.reply_to_message || {}),
+          document: { file_id: persistedFileId, mime_type: "image/jpeg" },
+        };
+      }
     }
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (input, init) => localizedFetch(input, init, originalFetch);
     try {
-      return await baseWorker.fetch(new Request(request, { body: JSON.stringify(update) }), env, ctx);
+      return await baseWorker.fetch(
+        new Request(request, { body: JSON.stringify(update) }),
+        env,
+        ctx,
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }
