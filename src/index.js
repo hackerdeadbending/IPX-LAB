@@ -1,13 +1,7 @@
 const MAIN_MENU = {
   inline_keyboard: [
-    [
-      { text: "📐 Resize", callback_data: "resize" },
-      { text: "🗜️ Compress", callback_data: "compress" },
-    ],
-    [
-      { text: "🔄 Convert", callback_data: "convert" },
-      { text: "✂️ Crop", callback_data: "crop" },
-    ],
+    [{ text: "📐 Resize", callback_data: "resize" }, { text: "🗜️ Compress", callback_data: "compress" }],
+    [{ text: "🔄 Convert", callback_data: "convert" }, { text: "✂️ Crop", callback_data: "crop" }],
     [{ text: "🛡️ Safe Share", callback_data: "safe-share" }],
     [{ text: "🧹 Remove Metadata", callback_data: "metadata" }],
     [{ text: "ℹ️ Image Info", callback_data: "info" }],
@@ -16,11 +10,7 @@ const MAIN_MENU = {
 
 const RESIZE_MENU = {
   inline_keyboard: [
-    [
-      { text: "800 px", callback_data: "resize:800" },
-      { text: "1200 px", callback_data: "resize:1200" },
-      { text: "1600 px", callback_data: "resize:1600" },
-    ],
+    [{ text: "800 px", callback_data: "resize:800" }, { text: "1200 px", callback_data: "resize:1200" }, { text: "1600 px", callback_data: "resize:1600" }],
     [{ text: "✏️ Custom size", callback_data: "resize:custom" }],
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
@@ -28,10 +18,7 @@ const RESIZE_MENU = {
 
 const COMPRESS_MENU = {
   inline_keyboard: [
-    [
-      { text: "High quality", callback_data: "compress:85" },
-      { text: "Balanced", callback_data: "compress:70" },
-    ],
+    [{ text: "High quality", callback_data: "compress:85" }, { text: "Balanced", callback_data: "compress:70" }],
     [{ text: "Small size", callback_data: "compress:50" }],
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
@@ -39,25 +26,17 @@ const COMPRESS_MENU = {
 
 const CONVERT_MENU = {
   inline_keyboard: [
-    [
-      { text: "JPG", callback_data: "convert:jpeg" },
-      { text: "PNG", callback_data: "convert:png" },
-      { text: "WEBP", callback_data: "convert:webp" },
-    ],
+    [{ text: "JPG", callback_data: "convert:jpeg" }, { text: "PNG", callback_data: "convert:png" }],
+    [{ text: "WEBP", callback_data: "convert:webp" }, { text: "AVIF", callback_data: "convert:avif" }],
+    [{ text: "GIF", callback_data: "convert:gif" }],
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
 };
 
 const CROP_MENU = {
   inline_keyboard: [
-    [
-      { text: "1:1", callback_data: "crop:1:1" },
-      { text: "16:9", callback_data: "crop:16:9" },
-    ],
-    [
-      { text: "9:16", callback_data: "crop:9:16" },
-      { text: "4:5", callback_data: "crop:4:5" },
-    ],
+    [{ text: "1:1", callback_data: "crop:1:1" }, { text: "16:9", callback_data: "crop:16:9" }],
+    [{ text: "9:16", callback_data: "crop:9:16" }, { text: "4:5", callback_data: "crop:4:5" }],
     [{ text: "↩️ Back", callback_data: "back" }],
   ],
 };
@@ -71,26 +50,19 @@ const SAFE_SHARE_MENU = {
   ],
 };
 
-const pendingCustomResize = new Map();
-const CUSTOM_RESIZE_TTL_MS = 10 * 60 * 1000;
-
 async function telegram(method, token, body) {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || `Telegram ${method} failed`);
   return data.result;
 }
 
 function textResponse(text, status = 200) {
-  return new Response(text, {
-    status,
-    headers: { "content-type": "text/plain; charset=utf-8" },
-  });
+  return new Response(text, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
 function getSourceFileId(message) {
@@ -99,11 +71,34 @@ function getSourceFileId(message) {
   return null;
 }
 
-function getOutputFormat(action) {
-  if (action === "convert:jpeg") return "image/jpeg";
-  if (action === "convert:png") return "image/png";
-  if (action === "convert:webp") return "image/webp";
-  return "image/jpeg";
+async function ensureSourceTable(env) {
+  if (!env.DB) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (
+    telegram_id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+}
+
+async function rememberSource(env, chatId, fileId) {
+  if (!env.DB || !chatId || !fileId) return;
+  await ensureSourceTable(env);
+  await env.DB.prepare(`INSERT INTO source_images (telegram_id, file_id, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id, updated_at=CURRENT_TIMESTAMP`)
+    .bind(String(chatId), fileId).run();
+}
+
+async function getRememberedSource(env, chatId) {
+  if (!env.DB || !chatId) return null;
+  await ensureSourceTable(env);
+  const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id = ?")
+    .bind(String(chatId)).first();
+  return row?.file_id || null;
+}
+
+async function resolveSourceFileId(env, chatId, message) {
+  return getSourceFileId(message) || await getRememberedSource(env, chatId);
 }
 
 function formatBytes(bytes) {
@@ -134,25 +129,32 @@ async function sendPhotoMenu(token, chatId, fileId) {
   });
 }
 
-async function sendTransformedFile(token, chatId, resultResponse, filename, caption) {
-  const bytes = await resultResponse.arrayBuffer();
-  const contentType = resultResponse.headers.get("content-type") || "image/jpeg";
+async function sendTransformedFile(token, chatId, response, filename, caption) {
+  const bytes = await response.arrayBuffer();
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], filename, { type: contentType }));
   form.append("caption", caption);
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
-    method: "POST",
-    body: form,
-  });
-  const data = await response.json();
+  const result = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
+  const data = await result.json();
   if (!data.ok) throw new Error(data.description || "Telegram upload failed");
+}
+
+function conversion(action) {
+  const formats = {
+    "convert:jpeg": ["image/jpeg", "jpg"],
+    "convert:png": ["image/png", "png"],
+    "convert:webp": ["image/webp", "webp"],
+    "convert:avif": ["image/avif", "avif"],
+    "convert:gif": ["image/gif", "gif"],
+  };
+  return formats[action] || null;
 }
 
 async function transformImage(env, token, chatId, fileId, action) {
   const source = await getTelegramFile(token, fileId);
-  if (!env.IMAGES) throw new Error("Cloudflare Images binding is not configured yet");
+  if (!env.IMAGES) throw new Error("Cloudflare Images binding is not configured");
 
   if (action === "info") {
     const info = await env.IMAGES.info(source.body);
@@ -160,47 +162,42 @@ async function transformImage(env, token, chatId, fileId, action) {
     const height = info?.height ?? "unknown";
     const size = info?.fileSize ? formatBytes(info.fileSize) : "unknown";
     const format = info?.format || "unknown";
-    const megapixels = Number.isFinite(info?.width) && Number.isFinite(info?.height)
-      ? ((info.width * info.height) / 1_000_000).toFixed(2)
-      : "unknown";
-
+    const mp = Number.isFinite(info?.width) && Number.isFinite(info?.height)
+      ? ((info.width * info.height) / 1000000).toFixed(2) : "unknown";
     await telegram("sendMessage", token, {
       chat_id: chatId,
-      text: `ℹ️ Image Info\n\nResolution: ${width} × ${height}\nFormat: ${format}\nSize: ${size}\nMegapixels: ${megapixels} MP`,
+      text: `ℹ️ Image Info\n\nResolution: ${width} × ${height}\nFormat: ${format}\nSize: ${size}\nMegapixels: ${mp} MP`,
       reply_markup: MAIN_MENU,
     });
     return;
   }
 
-  let operation = action;
-  let outputFormat = "image/jpeg";
-  let quality = 85;
   let transform = { fit: "scale-down" };
-  let resultCaption = null;
-  let resultFilename = null;
+  let outputFormat = "image/jpeg";
+  let quality = 88;
+  let filename = null;
+  let caption = null;
 
   if (action === "metadata") {
     transform = { fit: "scale-down", metadata: "none" };
-    outputFormat = "image/jpeg";
     quality = 100;
+    filename = "ipx-lab-metadata-removed.jpg";
+    caption = "✅ Metadata removed";
   } else if (action === "safe-share:metadata") {
     transform = { fit: "scale-down", metadata: "none" };
-    outputFormat = "image/jpeg";
     quality = 100;
-    resultCaption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Visible faces, plates, QR codes and text were left untouched\n\nYour original photo was not modified.";
-    resultFilename = "ipx-lab-safe-share-metadata.jpg";
+    filename = "ipx-lab-safe-share-metadata.jpg";
+    caption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Visible content was not blurred or hidden.";
   } else if (action === "safe-share:size") {
     transform = { width: 2000, fit: "scale-down" };
-    outputFormat = "image/jpeg";
     quality = 90;
-    resultCaption = "🛡️ Safe Share copy ready\n\n✓ Long edge limited to 2000 px\n✓ No visible privacy items were changed\n✓ Hidden metadata was not intentionally removed\n\nYour original photo was not modified.";
-    resultFilename = "ipx-lab-safe-share-size.jpg";
+    filename = "ipx-lab-safe-share-2000px.jpg";
+    caption = "🛡️ Safe Share copy ready\n\n✓ Long edge limited to 2000 px";
   } else if (action === "safe-share:both") {
     transform = { width: 2000, fit: "scale-down", metadata: "none" };
-    outputFormat = "image/jpeg";
     quality = 90;
-    resultCaption = "🛡️ Safe Share copy ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Long edge limited to 2000 px\n✓ Visible faces, plates, QR codes and text were left untouched\n\nYour original photo was not modified.";
-    resultFilename = "ipx-lab-safe-share.jpg";
+    filename = "ipx-lab-safe-share.jpg";
+    caption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ Long edge limited to 2000 px";
   } else if (action.startsWith("resize:")) {
     const parts = action.split(":");
     const width = Number(parts[1]);
@@ -208,102 +205,71 @@ async function transformImage(env, token, chatId, fileId, action) {
     if (!Number.isInteger(width) || width < 50 || width > 10000) throw new Error("Invalid resize width");
     if (height !== null && (!Number.isInteger(height) || height < 50 || height > 10000)) throw new Error("Invalid resize height");
     transform = height === null ? { width, fit: "scale-down" } : { width, height, fit: "fill" };
-    outputFormat = "image/jpeg";
-    quality = 88;
+    filename = height ? `ipx-lab-resize-${width}x${height}.jpg` : `ipx-lab-resize-${width}.jpg`;
+    caption = `📐 Resize complete\n\n${width}${height ? ` × ${height}` : " px wide"}`;
   } else if (action.startsWith("compress:")) {
     quality = Number(action.split(":")[1]);
     if (![50, 70, 85].includes(quality)) throw new Error("Invalid compression quality");
-    transform = { fit: "scale-down" };
-    outputFormat = "image/jpeg";
-  } else if (action.startsWith("convert:")) {
-    outputFormat = getOutputFormat(action);
-    transform = { fit: "scale-down" };
-    quality = outputFormat === "image/png" ? undefined : 88;
+    filename = `ipx-lab-compressed-${quality}.jpg`;
+    caption = `🗜️ Compression complete\n\nQuality: ${quality}%`;
+  } else if (conversion(action)) {
+    [outputFormat] = conversion(action);
+    const [, ext] = conversion(action);
+    quality = outputFormat === "image/png" || outputFormat === "image/gif" ? undefined : 88;
+    filename = `ipx-lab-converted.${ext}`;
+    caption = `🔄 Conversion complete\n\nFormat: ${ext.toUpperCase()}`;
   } else if (action.startsWith("crop:")) {
     const [, ratioW, ratioH] = action.split(":");
-    const w = Number(ratioW);
-    const h = Number(ratioH);
+    const w = Number(ratioW); const h = Number(ratioH);
     if (!Number.isFinite(w) || !Number.isFinite(h)) throw new Error("Invalid crop ratio");
     const base = 1200;
-    const width = w >= h ? base : Math.round(base * (w / h));
-    const height = w >= h ? Math.round(base * (h / w)) : base;
+    const width = w >= h ? base : Math.round(base * w / h);
+    const height = w >= h ? Math.round(base * h / w) : base;
     transform = { width, height, fit: "cover" };
-    outputFormat = "image/jpeg";
-    quality = 88;
+    filename = `ipx-lab-crop-${ratioW}x${ratioH}.jpg`;
+    caption = `✂️ Crop complete\n\nRatio: ${ratioW}:${ratioH}`;
   } else {
-    throw new Error(`Unknown image action: ${operation}`);
+    throw new Error("Unknown image action");
   }
 
-  const image = env.IMAGES.input(source.body).transform(transform);
-  const outputOptions = { format: outputFormat };
-  if (quality !== undefined) outputOptions.quality = quality;
-
-  const transformed = await image.output(outputOptions);
-  const response = transformed.response();
+  const pipeline = env.IMAGES.input(source.body).transform(transform);
+  const output = await pipeline.output({ format: outputFormat, ...(quality !== undefined ? { quality } : {}) });
+  const response = output.response();
   if (!response.ok) throw new Error(`Image transformation failed (${response.status})`);
-
-  const extension = outputFormat === "image/png" ? "png" : outputFormat === "image/webp" ? "webp" : "jpg";
-  const label = operation.split(":")[0];
-  await sendTransformedFile(
-    token,
-    chatId,
-    response,
-    resultFilename || `ipx-lab-${label}.${extension}`,
-    resultCaption || (action === "metadata" ? "✅ Metadata removed" : `✅ ${label.charAt(0).toUpperCase() + label.slice(1)} complete`),
-  );
-
+  await sendTransformedFile(token, chatId, response, filename, caption);
   await sendMainMenu(token, chatId, "Ready for another operation:");
 }
 
 function parseCustomResize(text) {
-  const normalized = String(text || "").trim().toLowerCase().replace(/\s+/g, "");
-  const match = normalized.match(/^(\d{2,5})(?:x(\d{2,5}))?$/);
+  const match = String(text || "").trim().toLowerCase().replace(/\s+/g, "").match(/^(\d{2,5})(?:x(\d{2,5}))?$/);
   if (!match) return null;
-  const width = Number(match[1]);
-  const height = match[2] ? Number(match[2]) : null;
-  if (width < 50 || width > 10000) return null;
-  if (height !== null && (height < 50 || height > 10000)) return null;
+  const width = Number(match[1]); const height = match[2] ? Number(match[2]) : null;
+  if (width < 50 || width > 10000 || (height !== null && (height < 50 || height > 10000))) return null;
   return { width, height };
 }
 
-async function handleCustomResizeInput(env, token, chatId, text) {
-  const pending = pendingCustomResize.get(chatId);
-  if (!pending || pending.expiresAt < Date.now()) {
-    pendingCustomResize.delete(chatId);
-    return false;
-  }
-
+async function handleCustomResize(env, token, chatId, text) {
   const size = parseCustomResize(text);
-  if (!size) {
-    await telegram("sendMessage", token, {
-      chat_id: chatId,
-      text: "❌ Invalid size.\n\nUse for example:\n• 1920x1080 — exact width × height\n• 1500 — custom width, height keeps the original proportion\n\nEnter a size from 50 to 10000 px.",
-    });
-    return true;
-  }
-
-  pendingCustomResize.delete(chatId);
+  if (!size) return false;
+  const fileId = await getRememberedSource(env, chatId);
+  if (!fileId) throw new Error("Please send a photo first");
   const action = size.height === null ? `resize:${size.width}` : `resize:${size.width}:${size.height}`;
-  await telegram("sendMessage", token, {
-    chat_id: chatId,
-    text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...`,
-  });
-  await transformImage(env, token, chatId, pending.fileId, action);
+  await telegram("sendMessage", token, { chat_id: chatId, text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...` });
+  await transformImage(env, token, chatId, fileId, action);
   return true;
 }
 
-async function showCallbackMenu(token, chatId, message, replyMarkup, fallbackText) {
-  const messageId = message?.message_id;
-  if (messageId) {
+async function showMenu(token, chatId, message, replyMarkup, fallbackText) {
+  if (message?.message_id) {
     try {
       await telegram("editMessageReplyMarkup", token, {
         chat_id: chatId,
-        message_id: messageId,
+        message_id: message.message_id,
         reply_markup: replyMarkup,
       });
       return;
     } catch (error) {
-      console.error("IPX LAB edit menu error", error);
+      console.error("IPX LAB menu edit error", error);
     }
   }
   await telegram("sendMessage", token, { chat_id: chatId, text: fallbackText, reply_markup: replyMarkup });
@@ -312,41 +278,31 @@ async function showCallbackMenu(token, chatId, message, replyMarkup, fallbackTex
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return textResponse("IPX LAB Photo is online.");
-
     const token = env.TELEGRAM_BOT_TOKEN;
     if (!token) return textResponse("Missing TELEGRAM_BOT_TOKEN", 500);
 
     let update;
-    try {
-      update = await request.json();
-    } catch {
-      return textResponse("Invalid JSON", 400);
-    }
+    try { update = await request.json(); } catch { return textResponse("Invalid JSON", 400); }
 
     try {
       if (update.message) {
         const chatId = update.message.chat?.id;
         if (!chatId) return textResponse("OK");
-
         const fileId = getSourceFileId(update.message);
+
         if (fileId) {
-          pendingCustomResize.delete(chatId);
+          await rememberSource(env, chatId, fileId);
           await sendPhotoMenu(token, chatId, fileId);
         } else if (typeof update.message.text === "string") {
-          const handled = await handleCustomResizeInput(env, token, chatId, update.message.text);
-          if (!handled) {
-            await telegram("sendMessage", token, {
-              chat_id: chatId,
-              text: "👋 Welcome to IPX LAB Photo!\n\nSend me a photo and choose an operation.",
-              reply_markup: MAIN_MENU,
-            });
+          const text = update.message.text.trim();
+          if (text === "/start" || text === "/help") {
+            await telegram("sendMessage", token, { chat_id: chatId, text: "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." });
+          } else if (parseCustomResize(text)) {
+            const handled = await handleCustomResize(env, token, chatId, text);
+            if (!handled) await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first." });
+          } else {
+            await telegram("sendMessage", token, { chat_id: chatId, text: "📸 Send me a photo first. Your editing tools will appear after you upload it." });
           }
-        } else {
-          await telegram("sendMessage", token, {
-            chat_id: chatId,
-            text: "👋 Welcome to IPX LAB Photo!\n\nSend me a photo and choose an operation.",
-            reply_markup: MAIN_MENU,
-          });
         }
       }
 
@@ -354,53 +310,35 @@ export default {
         const query = update.callback_query;
         const chatId = query.message?.chat?.id;
         const action = query.data || "";
-        const fileId = getSourceFileId(query.message);
-
         await telegram("answerCallbackQuery", token, { callback_query_id: query.id });
         if (!chatId) return textResponse("OK");
 
+        const fileId = await resolveSourceFileId(env, chatId, query.message);
+
         if (action === "back") {
-          pendingCustomResize.delete(chatId);
-          await showCallbackMenu(token, chatId, query.message, MAIN_MENU, "Choose an operation:");
+          await showMenu(token, chatId, query.message, MAIN_MENU, "Choose an operation:");
         } else if (action === "resize") {
-          await showCallbackMenu(token, chatId, query.message, RESIZE_MENU, "📐 Choose the maximum width or set a custom size:");
+          await showMenu(token, chatId, query.message, RESIZE_MENU, "📐 Choose the maximum width or custom size:");
         } else if (action === "resize:custom") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          pendingCustomResize.set(chatId, { fileId, expiresAt: Date.now() + CUSTOM_RESIZE_TTL_MS });
-          await telegram("sendMessage", token, {
-            chat_id: chatId,
-            text: "✏️ Enter the size you want.\n\nExamples:\n• 1920x1080 — exact width × height\n• 1080x1920 — vertical\n• 1500x1500 — square\n• 1500 — custom width, height keeps the original proportion\n\nMinimum: 50 px · Maximum: 10000 px",
-          });
+          if (!fileId) throw new Error("Please send a photo first");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "✏️ Enter the size.\n\nExamples: 1920x1080, 1080x1920, 1500x1500 or 1500\n\nMinimum: 50 px · Maximum: 10000 px" });
         } else if (action === "compress") {
-          await showCallbackMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression strength:");
+          await showMenu(token, chatId, query.message, COMPRESS_MENU, "🗜️ Choose compression strength:");
         } else if (action === "convert") {
-          await showCallbackMenu(token, chatId, query.message, CONVERT_MENU, "🔄 Choose the output format:");
+          await showMenu(token, chatId, query.message, CONVERT_MENU, "🔄 Choose the output format:");
         } else if (action === "crop") {
-          await showCallbackMenu(token, chatId, query.message, CROP_MENU, "✂️ Choose a crop ratio:");
+          await showMenu(token, chatId, query.message, CROP_MENU, "✂️ Choose a crop ratio:");
         } else if (action === "safe-share") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await showCallbackMenu(token, chatId, query.message, SAFE_SHARE_MENU, "🛡️ Safe Share");
-        } else if (action === "safe-share:metadata") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing only hidden metadata..." });
-          await transformImage(env, token, chatId, fileId, "safe-share:metadata");
-        } else if (action === "safe-share:size") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Creating a 2000 px share copy..." });
-          await transformImage(env, token, chatId, fileId, "safe-share:size");
-        } else if (action === "safe-share:both") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🛡️ Applying your selected Safe Share options..." });
-          await transformImage(env, token, chatId, fileId, "safe-share:both");
+          if (!fileId) throw new Error("Please send a photo first");
+          await showMenu(token, chatId, query.message, SAFE_SHARE_MENU, "🛡️ Safe Share");
         } else if (action === "metadata") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing image metadata..." });
-          await transformImage(env, token, chatId, fileId, "metadata");
-        } else if (action === "info") {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
-          await transformImage(env, token, chatId, fileId, "info");
+          if (!fileId) throw new Error("Please send a photo first");
+          await transformImage(env, token, chatId, fileId, action);
+        } else if (["safe-share:metadata", "safe-share:size", "safe-share:both", "info"].includes(action)) {
+          if (!fileId) throw new Error("Please send a photo first");
+          await transformImage(env, token, chatId, fileId, action);
         } else if (action.startsWith("resize:") || action.startsWith("compress:") || action.startsWith("convert:") || action.startsWith("crop:")) {
-          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          if (!fileId) throw new Error("Please send a photo first");
           await transformImage(env, token, chatId, fileId, action);
         }
       }
@@ -409,15 +347,7 @@ export default {
     } catch (error) {
       console.error("IPX LAB error", error);
       const chatId = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
-      if (chatId) {
-        const language = String(update.message?.from?.language_code || update.callback_query?.from?.language_code || "").toLowerCase().startsWith("ru") ? "ru" : "en";
-        await telegram("sendMessage", token, {
-          chat_id: chatId,
-          text: language === "ru"
-            ? `⚠️ Не удалось обработать изображение.\n\n${error.message || "Произошла ошибка."}`
-            : `⚠️ I couldn't process that image.\n\n${error.message || "Something went wrong."}`,
-        });
-      }
+      if (chatId) await telegram("sendMessage", token, { chat_id: chatId, text: `⚠️ I couldn't process that image.\n\n${error.message || "Something went wrong."}` });
       return textResponse("OK");
     }
   },
