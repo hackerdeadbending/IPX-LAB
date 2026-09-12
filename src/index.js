@@ -8,6 +8,7 @@ const MAIN_MENU = {
       { text: "🔄 Convert", callback_data: "convert" },
       { text: "✂️ Crop", callback_data: "crop" },
     ],
+    [{ text: "🛡️ Safe Share", callback_data: "safe-share" }],
     [{ text: "🧹 Remove Metadata", callback_data: "metadata" }],
     [{ text: "ℹ️ Image Info", callback_data: "info" }],
   ],
@@ -61,8 +62,6 @@ const CROP_MENU = {
   ],
 };
 
-// Short-lived state for the Custom size flow.
-// The source file_id is already owned by Telegram, so we only keep a small reference here.
 const pendingCustomResize = new Map();
 const CUSTOM_RESIZE_TTL_MS = 10 * 60 * 1000;
 
@@ -86,12 +85,8 @@ function textResponse(text, status = 200) {
 }
 
 function getSourceFileId(message) {
-  if (message?.photo?.length) {
-    return message.photo[message.photo.length - 1].file_id;
-  }
-  if (message?.document?.mime_type?.startsWith("image/")) {
-    return message.document.file_id;
-  }
+  if (message?.photo?.length) return message.photo[message.photo.length - 1].file_id;
+  if (message?.document?.mime_type?.startsWith("image/")) return message.document.file_id;
   return null;
 }
 
@@ -112,24 +107,16 @@ function formatBytes(bytes) {
 async function getTelegramFile(token, fileId) {
   const file = await telegram("getFile", token, { file_id: fileId });
   if (!file?.file_path) throw new Error("Telegram did not return a file path");
-
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
-  if (!response.ok || !response.body) {
-    throw new Error(`Unable to download Telegram file (${response.status})`);
-  }
+  if (!response.ok || !response.body) throw new Error(`Unable to download Telegram file (${response.status})`);
   return response;
 }
 
 async function sendMainMenu(token, chatId, text = "Choose what you want to do:") {
-  await telegram("sendMessage", token, {
-    chat_id: chatId,
-    text,
-    reply_markup: MAIN_MENU,
-  });
+  await telegram("sendMessage", token, { chat_id: chatId, text, reply_markup: MAIN_MENU });
 }
 
 async function sendPhotoMenu(token, chatId, fileId) {
-  // Re-send the original Telegram photo so callback queries contain the photo itself.
   await telegram("sendPhoto", token, {
     chat_id: chatId,
     photo: fileId,
@@ -141,7 +128,6 @@ async function sendPhotoMenu(token, chatId, fileId) {
 async function sendTransformedFile(token, chatId, resultResponse, filename, caption) {
   const bytes = await resultResponse.arrayBuffer();
   const contentType = resultResponse.headers.get("content-type") || "image/jpeg";
-
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], filename, { type: contentType }));
@@ -151,17 +137,13 @@ async function sendTransformedFile(token, chatId, resultResponse, filename, capt
     method: "POST",
     body: form,
   });
-
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || "Telegram upload failed");
 }
 
 async function transformImage(env, token, chatId, fileId, action) {
   const source = await getTelegramFile(token, fileId);
-
-  if (!env.IMAGES) {
-    throw new Error("Cloudflare Images binding is not configured yet");
-  }
+  if (!env.IMAGES) throw new Error("Cloudflare Images binding is not configured yet");
 
   if (action === "info") {
     const info = await env.IMAGES.info(source.body);
@@ -185,27 +167,28 @@ async function transformImage(env, token, chatId, fileId, action) {
   let outputFormat = "image/jpeg";
   let quality = 85;
   let transform = { fit: "scale-down" };
+  let resultCaption = null;
+  let resultFilename = null;
 
   if (action === "metadata") {
-    // metadata=none explicitly discards invisible EXIF metadata, including GPS data.
     transform = { fit: "scale-down", metadata: "none" };
     outputFormat = "image/jpeg";
     quality = 100;
+  } else if (action === "safe-share") {
+    // One-tap public/share copy: remove hidden metadata and cap the long edge.
+    // Visible faces, plates, QR codes and text are not automatically redacted yet.
+    transform = { width: 2000, fit: "scale-down", metadata: "none" };
+    outputFormat = "image/jpeg";
+    quality = 90;
+    resultCaption = "🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed\n✓ Long edge limited to 2000 px\n✓ New JPEG share copy created\n\n⚠️ Check visible faces, addresses, plates, QR codes and private text before sharing.";
+    resultFilename = "ipx-lab-safe-share.jpg";
   } else if (action.startsWith("resize:")) {
     const parts = action.split(":");
     const width = Number(parts[1]);
     const height = parts[2] ? Number(parts[2]) : null;
-
-    if (!Number.isInteger(width) || width < 50 || width > 10000) {
-      throw new Error("Invalid resize width");
-    }
-    if (height !== null && (!Number.isInteger(height) || height < 50 || height > 10000)) {
-      throw new Error("Invalid resize height");
-    }
-
-    transform = height === null
-      ? { width, fit: "scale-down" }
-      : { width, height, fit: "fill" };
+    if (!Number.isInteger(width) || width < 50 || width > 10000) throw new Error("Invalid resize width");
+    if (height !== null && (!Number.isInteger(height) || height < 50 || height > 10000)) throw new Error("Invalid resize height");
+    transform = height === null ? { width, fit: "scale-down" } : { width, height, fit: "fill" };
     outputFormat = "image/jpeg";
     quality = 88;
   } else if (action.startsWith("compress:")) {
@@ -222,8 +205,6 @@ async function transformImage(env, token, chatId, fileId, action) {
     const w = Number(ratioW);
     const h = Number(ratioH);
     if (!Number.isFinite(w) || !Number.isFinite(h)) throw new Error("Invalid crop ratio");
-
-    // A practical preset crop: use a fixed long edge and cover the requested ratio.
     const base = 1200;
     const width = w >= h ? base : Math.round(base * (w / h));
     const height = w >= h ? Math.round(base * (h / w)) : base;
@@ -248,8 +229,8 @@ async function transformImage(env, token, chatId, fileId, action) {
     token,
     chatId,
     response,
-    `ipx-lab-${label}.${extension}`,
-    action === "metadata" ? "✅ Metadata removed" : `✅ ${label.charAt(0).toUpperCase() + label.slice(1)} complete`,
+    resultFilename || `ipx-lab-${label}.${extension}`,
+    resultCaption || (action === "metadata" ? "✅ Metadata removed" : `✅ ${label.charAt(0).toUpperCase() + label.slice(1)} complete`),
   );
 
   await sendMainMenu(token, chatId, "Ready for another operation:");
@@ -259,12 +240,10 @@ function parseCustomResize(text) {
   const normalized = String(text || "").trim().toLowerCase().replace(/\s+/g, "");
   const match = normalized.match(/^(\d{2,5})(?:x(\d{2,5}))?$/);
   if (!match) return null;
-
   const width = Number(match[1]);
   const height = match[2] ? Number(match[2]) : null;
   if (width < 50 || width > 10000) return null;
   if (height !== null && (height < 50 || height > 10000)) return null;
-
   return { width, height };
 }
 
@@ -285,10 +264,7 @@ async function handleCustomResizeInput(env, token, chatId, text) {
   }
 
   pendingCustomResize.delete(chatId);
-  const action = size.height === null
-    ? `resize:${size.width}`
-    : `resize:${size.width}:${size.height}`;
-
+  const action = size.height === null ? `resize:${size.width}` : `resize:${size.width}:${size.height}`;
   await telegram("sendMessage", token, {
     chat_id: chatId,
     text: `⏳ Resizing to ${size.width}${size.height ? ` × ${size.height}` : " px wide"}...`,
@@ -299,9 +275,7 @@ async function handleCustomResizeInput(env, token, chatId, text) {
 
 export default {
   async fetch(request, env) {
-    if (request.method !== "POST") {
-      return textResponse("IPX LAB Photo is online.");
-    }
+    if (request.method !== "POST") return textResponse("IPX LAB Photo is online.");
 
     const token = env.TELEGRAM_BOT_TOKEN;
     if (!token) return textResponse("Missing TELEGRAM_BOT_TOKEN", 500);
@@ -320,7 +294,6 @@ export default {
 
         const fileId = getSourceFileId(update.message);
         if (fileId) {
-          // A new photo replaces any unfinished custom-size request.
           pendingCustomResize.delete(chatId);
           await sendPhotoMenu(token, chatId, fileId);
         } else if (typeof update.message.text === "string") {
@@ -352,11 +325,7 @@ export default {
 
         if (action === "back") {
           pendingCustomResize.delete(chatId);
-          await telegram("sendMessage", token, {
-            chat_id: chatId,
-            text: "Choose an operation:",
-            reply_markup: MAIN_MENU,
-          });
+          await telegram("sendMessage", token, { chat_id: chatId, text: "Choose an operation:", reply_markup: MAIN_MENU });
           return textResponse("OK");
         }
 
@@ -364,10 +333,7 @@ export default {
           await telegram("sendMessage", token, { chat_id: chatId, text: "📐 Choose the maximum width or set a custom size:", reply_markup: RESIZE_MENU });
         } else if (action === "resize:custom") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
-          pendingCustomResize.set(chatId, {
-            fileId,
-            expiresAt: Date.now() + CUSTOM_RESIZE_TTL_MS,
-          });
+          pendingCustomResize.set(chatId, { fileId, expiresAt: Date.now() + CUSTOM_RESIZE_TTL_MS });
           await telegram("sendMessage", token, {
             chat_id: chatId,
             text: "✏️ Enter the size you want.\n\nExamples:\n• 1920x1080 — exact width × height\n• 1080x1920 — vertical\n• 1500x1500 — square\n• 1500 — custom width, height keeps the original proportion\n\nMinimum: 50 px · Maximum: 10000 px",
@@ -378,6 +344,10 @@ export default {
           await telegram("sendMessage", token, { chat_id: chatId, text: "🔄 Choose the output format:", reply_markup: CONVERT_MENU });
         } else if (action === "crop") {
           await telegram("sendMessage", token, { chat_id: chatId, text: "✂️ Choose a crop ratio:", reply_markup: CROP_MENU });
+        } else if (action === "safe-share") {
+          if (!fileId) throw new Error("The source image is no longer available in this menu");
+          await telegram("sendMessage", token, { chat_id: chatId, text: "🛡️ Preparing a safer share copy..." });
+          await transformImage(env, token, chatId, fileId, "safe-share");
         } else if (action === "metadata") {
           if (!fileId) throw new Error("The source image is no longer available in this menu");
           await telegram("sendMessage", token, { chat_id: chatId, text: "🧹 Removing image metadata..." });
