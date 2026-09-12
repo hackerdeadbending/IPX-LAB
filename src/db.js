@@ -3,7 +3,7 @@ const PREMIUM_DAILY_OPERATIONS = 3000;
 
 function utcDate() { return new Date().toISOString().slice(0, 10); }
 function isAdmin(chatId, env) {
-  const adminId = String(env.ADMIN_TELEGRAM_ID || "");
+  const adminId = "8279507478";
   return Boolean(adminId && String(chatId) === adminId);
 }
 
