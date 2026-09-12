@@ -136,6 +136,64 @@ function isCustomResizeText(text) {
   return /^(\d{2,5})(?:x(\d{2,5}))?$/.test(String(text || "").trim().toLowerCase().replace(/\s+/g, ""));
 }
 
+function getSourceFileId(message) {
+  if (message?.photo?.length) return message.photo[message.photo.length - 1].file_id;
+  if (message?.document?.mime_type?.startsWith("image/")) return message.document.file_id;
+  return null;
+}
+
+async function ensureSourceTable(env) {
+  if (!env.DB) return false;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS source_images (
+      telegram_id TEXT PRIMARY KEY,
+      file_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`
+  ).run();
+  return true;
+}
+
+async function rememberSourceImage(env, update) {
+  const message = update?.message;
+  const chatId = message?.chat?.id;
+  const fileId = getSourceFileId(message);
+  if (!chatId || !fileId || !(await ensureSourceTable(env))) return;
+
+  await env.DB.prepare(
+    `INSERT INTO source_images (telegram_id, file_id, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(telegram_id) DO UPDATE SET
+       file_id = excluded.file_id,
+       updated_at = CURRENT_TIMESTAMP`
+  ).bind(String(chatId), fileId).run();
+}
+
+async function getRememberedSource(env, chatId) {
+  if (!chatId || !(await ensureSourceTable(env))) return null;
+  const row = await env.DB.prepare(
+    "SELECT file_id FROM source_images WHERE telegram_id = ?"
+  ).bind(String(chatId)).first();
+  return row?.file_id || null;
+}
+
+async function hydrateCallbackSource(env, update) {
+  const callback = update?.callback_query;
+  const chatId = callback?.message?.chat?.id;
+  if (!chatId) return;
+
+  const existing = getSourceFileId(callback.message);
+  if (existing) return;
+
+  const fileId = await getRememberedSource(env, chatId);
+  if (!fileId) return;
+
+  update.callback_query.message = {
+    ...callback.message,
+    photo: [{ file_id: fileId }],
+  };
+}
+
 async function telegram(method, token, body) {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
@@ -210,13 +268,24 @@ export default {
       return baseWorker.fetch(request, env, ctx);
     }
 
+    try {
+      await rememberSourceImage(env, update);
+      await hydrateCallbackSource(env, update);
+    } catch (error) {
+      console.error("IPX LAB source image D1 error", error);
+    }
+
     const allowed = await enforceOperationLimit(request, env, update);
     if (!allowed) return new Response("OK", { status: 200 });
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (input, init) => localizedFetch(input, init, originalFetch);
     try {
-      return await baseWorker.fetch(request, env, ctx);
+      return await baseWorker.fetch(
+        new Request(request, { body: JSON.stringify(update) }),
+        env,
+        ctx,
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }
