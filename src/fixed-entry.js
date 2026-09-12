@@ -1,4 +1,4 @@
-import currentWorker from "./entry.js";
+import currentWorker from "./features.js";
 
 export default {
   async fetch(request, env, ctx) {
