@@ -12,6 +12,7 @@ async function ensureCoreTables(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', stars_amount INTEGER, started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT, telegram_charge_id TEXT)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS daily_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, photo_date TEXT NOT NULL, file_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(telegram_id, photo_date, file_id))`).run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS admin_sessions (telegram_id TEXT PRIMARY KEY, target_telegram_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage(telegram_id, created_at)`).run();
 }
 
@@ -56,17 +57,61 @@ export async function consumePhoto(env, chatId, fileId, user = {}) {
   return { allowed: true, skipped: true };
 }
 
+export async function findUserByIdentifier(env, identifier) {
+  if (!env.DB) return null;
+  await ensureCoreTables(env.DB);
+  const value = String(identifier || "").trim();
+  if (/^\d{5,15}$/.test(value)) return getUser(env.DB, value);
+  const username = value.replace(/^@/, "").toLowerCase();
+  if (!username) return null;
+  return env.DB.prepare("SELECT telegram_id, username, first_name, language, plan, premium_until FROM users WHERE LOWER(username)=?").bind(username).first();
+}
+
+export async function setAdminTarget(env, adminChatId, targetTelegramId) {
+  if (!env.DB) return;
+  await ensureCoreTables(env.DB);
+  await env.DB.prepare("INSERT INTO admin_sessions (telegram_id,target_telegram_id) VALUES (?,?) ON CONFLICT(telegram_id) DO UPDATE SET target_telegram_id=excluded.target_telegram_id, created_at=CURRENT_TIMESTAMP").bind(String(adminChatId), String(targetTelegramId)).run();
+}
+
+export async function getAdminTarget(env, adminChatId) {
+  if (!env.DB) return null;
+  await ensureCoreTables(env.DB);
+  const row = await env.DB.prepare("SELECT target_telegram_id FROM admin_sessions WHERE telegram_id=?").bind(String(adminChatId)).first();
+  return row?.target_telegram_id || null;
+}
+
+export async function clearAdminTarget(env, adminChatId) {
+  if (!env.DB) return;
+  await ensureCoreTables(env.DB);
+  await env.DB.prepare("DELETE FROM admin_sessions WHERE telegram_id=?").bind(String(adminChatId)).run();
+}
+
 export async function grantPremium(env, chatId, days = 30, starsAmount = 0, chargeId = null) {
   if (!env.DB) return null;
   await ensureUser(env.DB, chatId);
-  const current = await getUser(env.DB, chatId);
-  const now = Date.now();
-  const currentUntil = current?.premium_until ? new Date(current.premium_until).getTime() : 0;
-  const base = Math.max(now, Number.isFinite(currentUntil) ? currentUntil : 0);
-  const until = new Date(base + days * 86400000).toISOString();
-  await env.DB.prepare("UPDATE users SET plan='premium', premium_until=?, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?").bind(until, String(chatId)).run();
-  await env.DB.prepare("INSERT INTO subscriptions (telegram_id, plan, status, stars_amount, expires_at, telegram_charge_id) VALUES (?, 'premium', 'active', ?, ?, ?)").bind(String(chatId), starsAmount, until, chargeId).run();
+  const id = String(chatId);
+  const current = await getUser(env.DB, id);
+  let until = null;
+  if (days !== null && days !== Infinity && Number(days) > 0) {
+    const now = Date.now();
+    const currentUntil = current?.premium_until ? new Date(current.premium_until).getTime() : 0;
+    const base = Math.max(now, Number.isFinite(currentUntil) ? currentUntil : 0);
+    until = new Date(base + Number(days) * 86400000).toISOString();
+  }
+  await env.DB.prepare("UPDATE users SET plan='premium', premium_until=?, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?").bind(until, id).run();
+  await env.DB.prepare("INSERT INTO subscriptions (telegram_id, plan, status, stars_amount, expires_at, telegram_charge_id) VALUES (?, 'premium', 'active', ?, ?, ?)").bind(id, starsAmount, until, chargeId).run();
   return until;
+}
+
+export async function revokePremium(env, chatId) {
+  if (!env.DB) return false;
+  await ensureUser(env.DB, chatId);
+  const id = String(chatId);
+  const current = await getUser(env.DB, id);
+  if (!current || current.plan !== "premium") return false;
+  await env.DB.prepare("UPDATE users SET plan='free', premium_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?").bind(id).run();
+  await env.DB.prepare("UPDATE subscriptions SET status='revoked' WHERE telegram_id=? AND status='active'").bind(id).run();
+  return true;
 }
 
 export async function getUsage(env, chatId) {
