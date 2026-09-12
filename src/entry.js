@@ -113,8 +113,17 @@ function isImageOperation(action) {
   return /^(resize|compress|convert|crop):/.test(action);
 }
 
+function normalizeCustomResizeText(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[×,]/g, "x")
+    .replace(/\s+/g, " ")
+    .replace(/\s*x\s*/g, "x");
+}
+
 function isCustomResizeText(text) {
-  return /^(\d{2,5})(?:x(\d{2,5}))?$/.test(String(text || "").trim().toLowerCase().replace(/\s+/g, ""));
+  return /^(\d{2,5})(?:x(\d{2,5}))?$/.test(normalizeCustomResizeText(text));
 }
 
 async function enforceOperationLimit(request, env, update) {
@@ -157,6 +166,13 @@ export default {
     try { update = await cloned.json(); } catch { return baseWorker.fetch(request, env, ctx); }
     const allowed = await enforceOperationLimit(request, env, update);
     if (!allowed) return new Response("OK", { status: 200 });
+
+    // Normalize custom size input before the base worker parses it.
+    // Examples: "50 50", "50x50", "50 x 50", "50 × 50" all become "50x50".
+    if (update?.message?.text && isCustomResizeText(update.message.text)) {
+      update.message.text = normalizeCustomResizeText(update.message.text);
+    }
+
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (input, init) => localizedFetch(input, init, originalFetch);
     try {
