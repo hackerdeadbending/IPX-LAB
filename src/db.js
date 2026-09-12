@@ -1,5 +1,5 @@
-const FREE_DAILY_OPERATIONS = 10;
-const PREMIUM_DAILY_OPERATIONS = 1000;
+const FREE_DAILY_OPERATIONS = 5;
+const PREMIUM_DAILY_OPERATIONS = 3000;
 
 function utcDate() { return new Date().toISOString().slice(0, 10); }
 function isAdmin(chatId, env) {
