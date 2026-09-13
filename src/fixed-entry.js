@@ -1,4 +1,5 @@
 import currentWorker from "./features.js";
+import baseWorker from "./entry.js";
 import { consumeAiOperation } from "./db.js";
 import { handleAiCallback } from "./ai-tools.js";
 
@@ -43,7 +44,6 @@ export default {
   async fetch(request, env, ctx) {
     const originalFetch = globalThis.fetch;
 
-    // /start and /help must never wait for D1/schema work. They are simple Telegram replies.
     if (request.method === "POST") {
       try {
         const update = await request.clone().json();
@@ -52,12 +52,15 @@ export default {
         const fromLanguage = String(update?.message?.from?.language_code || "").toLowerCase();
         if (chatId && (text === "/start" || text === "/help") && env.TELEGRAM_BOT_TOKEN) {
           const ru = fromLanguage.startsWith("ru");
-          await originalFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: ru ? "👋 Добро пожаловать в IPX LAB Photo!\n\n📸 Отправьте мне фото, и инструменты редактирования появятся автоматически." : "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." })
-          });
+          await originalFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: ru ? "👋 Добро пожаловать в IPX LAB Photo!\n\n📸 Отправьте мне фото, и инструменты редактирования появятся автоматически." : "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." }) });
           return new Response("OK", { status: 200 });
+        }
+
+        // A numeric reply to the image-size prompt must go straight to the image worker.
+        // This prevents the admin Premium state from interpreting e.g. "1000" as 1000 days.
+        const replyText = update?.message?.reply_to_message?.text || update?.message?.reply_to_message?.caption || "";
+        if (update?.message?.text && /Enter the maximum width|Enter exact dimensions/i.test(replyText)) {
+          return await baseWorker.fetch(request, env, ctx);
         }
       } catch (error) { console.error("IPX LAB fast command handling error", error); }
     }
