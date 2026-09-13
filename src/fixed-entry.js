@@ -4,6 +4,7 @@ import { handleAiCallback } from "./ai-tools.js";
 
 const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
 const AI_ACTIONS = new Set(["ai:remove-watermark", "ai:remove-text"]);
+const chatLanguages = new Map();
 
 function addMenuButtons(replyMarkup, languageCode = "en") {
   if (!replyMarkup?.inline_keyboard) return replyMarkup;
@@ -33,6 +34,17 @@ function addMenuButtons(replyMarkup, languageCode = "en") {
   return { ...replyMarkup, inline_keyboard: rows };
 }
 
+function getChatIdFromBody(body) {
+  if (!body) return null;
+  try {
+    if (body instanceof FormData) return body.get("chat_id") ? String(body.get("chat_id")) : null;
+    const parsed = typeof body === "string" ? JSON.parse(body) : body;
+    return parsed?.chat_id != null ? String(parsed.chat_id) : null;
+  } catch {
+    return null;
+  }
+}
+
 function patchTelegramRequest(input, init) {
   const url = typeof input === "string" ? input : input?.url || "";
   if (!url.startsWith("https://api.telegram.org/bot") || !init?.body) return init;
@@ -47,13 +59,14 @@ function patchTelegramRequest(input, init) {
 
     if (!["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return init;
 
+    const chatId = getChatIdFromBody(init.body);
+    const languageCode = chatId ? (chatLanguages.get(chatId) || "en") : "en";
+
     if (init.body instanceof FormData) {
       const form = init.body;
       const markupText = form.get("reply_markup");
       if (typeof markupText === "string") {
         const markup = JSON.parse(markupText);
-        const languageCode = form.get("__ipx_language_code") || "en";
-        form.delete("__ipx_language_code");
         form.set("reply_markup", JSON.stringify(addMenuButtons(markup, languageCode)));
       }
       if (form.has("document")) form.set("disable_content_type_detection", "true");
@@ -65,8 +78,7 @@ function patchTelegramRequest(input, init) {
       const markup = typeof body.reply_markup === "string"
         ? JSON.parse(body.reply_markup)
         : body.reply_markup;
-      body.reply_markup = addMenuButtons(markup, body.__ipx_language_code || "en");
-      delete body.__ipx_language_code;
+      body.reply_markup = addMenuButtons(markup, languageCode);
       return { ...init, body: JSON.stringify(body) };
     }
   } catch (error) {
@@ -88,7 +100,10 @@ export default {
           const update = await request.clone().json();
           const callback = update?.callback_query;
           const token = env.TELEGRAM_BOT_TOKEN;
+          const chatIdFromUpdate = callback?.message?.chat?.id || update?.message?.chat?.id;
           const languageCode = callback?.from?.language_code || update?.message?.from?.language_code || "en";
+          if (chatIdFromUpdate != null) chatLanguages.set(String(chatIdFromUpdate), languageCode);
+
           if (callback?.id && token) {
             try {
               await originalFetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
