@@ -5,28 +5,29 @@ import { handleAiCallback } from "./ai-tools.js";
 const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
 const AI_ACTIONS = new Set(["ai:remove-watermark", "ai:remove-text"]);
 
-function addMenuButtons(replyMarkup) {
+function addMenuButtons(replyMarkup, languageCode = "en") {
   if (!replyMarkup?.inline_keyboard) return replyMarkup;
   const isMainMenu = replyMarkup.inline_keyboard.some((row) =>
     row.some((button) => MAIN_ACTIONS.has(button.callback_data))
   );
   if (!isMainMenu) return replyMarkup;
 
+  const ru = String(languageCode || "").toLowerCase().startsWith("ru");
   const rows = replyMarkup.inline_keyboard.map((row) => [...row]);
   const hasFilters = rows.some((row) => row.some((button) => button.callback_data === "filters"));
   const hasPremium = rows.some((row) => row.some((button) => button.callback_data === "premium"));
   if (!hasFilters || !hasPremium) {
     rows.push([
-      { text: "🎬 Filters", callback_data: "filters" },
-      { text: "⭐ Buy Premium", callback_data: "premium" }
+      { text: ru ? "🎬 Фильтры" : "🎬 Filters", callback_data: "filters" },
+      { text: ru ? "⭐ Премиум" : "⭐ Buy Premium", callback_data: "premium" }
     ]);
   }
   const hasWatermark = rows.some((row) => row.some((button) => button.callback_data === "ai:remove-watermark"));
   const hasText = rows.some((row) => row.some((button) => button.callback_data === "ai:remove-text"));
   if (!hasWatermark || !hasText) {
     rows.push([
-      { text: "🧹 Remove Watermark", callback_data: "ai:remove-watermark" },
-      { text: "📝 Remove Text", callback_data: "ai:remove-text" }
+      { text: ru ? "🧹 Удалить водяной знак" : "🧹 Remove Watermark", callback_data: "ai:remove-watermark" },
+      { text: ru ? "📝 Удалить текст" : "📝 Remove Text", callback_data: "ai:remove-text" }
     ]);
   }
   return { ...replyMarkup, inline_keyboard: rows };
@@ -51,7 +52,9 @@ function patchTelegramRequest(input, init) {
       const markupText = form.get("reply_markup");
       if (typeof markupText === "string") {
         const markup = JSON.parse(markupText);
-        form.set("reply_markup", JSON.stringify(addMenuButtons(markup)));
+        const languageCode = form.get("__ipx_language_code") || "en";
+        form.delete("__ipx_language_code");
+        form.set("reply_markup", JSON.stringify(addMenuButtons(markup, languageCode)));
       }
       if (form.has("document")) form.set("disable_content_type_detection", "true");
       return { ...init, body: form };
@@ -62,7 +65,8 @@ function patchTelegramRequest(input, init) {
       const markup = typeof body.reply_markup === "string"
         ? JSON.parse(body.reply_markup)
         : body.reply_markup;
-      body.reply_markup = addMenuButtons(markup);
+      body.reply_markup = addMenuButtons(markup, body.__ipx_language_code || "en");
+      delete body.__ipx_language_code;
       return { ...init, body: JSON.stringify(body) };
     }
   } catch (error) {
@@ -84,6 +88,7 @@ export default {
           const update = await request.clone().json();
           const callback = update?.callback_query;
           const token = env.TELEGRAM_BOT_TOKEN;
+          const languageCode = callback?.from?.language_code || update?.message?.from?.language_code || "en";
           if (callback?.id && token) {
             try {
               await originalFetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
@@ -97,7 +102,7 @@ export default {
               const chatId = callback?.message?.chat?.id;
               if (chatId) {
                 try {
-                  await handleAiCallback(env, token, chatId, callback.data, consumeAiOperation);
+                  await handleAiCallback(env, token, chatId, callback.data, consumeAiOperation, languageCode);
                 } catch (error) {
                   console.error("IPX LAB AI error", error);
                   try {
@@ -106,7 +111,9 @@ export default {
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({
                         chat_id: chatId,
-                        text: `❌ AI image processing error:\n\n${error?.message || "Unknown error"}`
+                        text: String(languageCode).toLowerCase().startsWith("ru")
+                          ? `❌ Ошибка AI-обработки изображения:\n\n${error?.message || "Неизвестная ошибка"}`
+                          : `❌ AI image processing error:\n\n${error?.message || "Unknown error"}`
                       })
                     });
                   } catch (reportError) {
