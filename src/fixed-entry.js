@@ -1,6 +1,9 @@
 import currentWorker from "./features.js";
+import { consumeAiOperation } from "./db.js";
+import { handleAiCallback } from "./ai-tools.js";
 
 const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
+const AI_ACTIONS = new Set(["ai:remove-watermark", "ai:remove-text"]);
 
 function addMenuButtons(replyMarkup) {
   if (!replyMarkup?.inline_keyboard) return replyMarkup;
@@ -18,6 +21,14 @@ function addMenuButtons(replyMarkup) {
       { text: "⭐ Buy Premium", callback_data: "premium" }
     ]);
   }
+  const hasWatermark = rows.some((row) => row.some((button) => button.callback_data === "ai:remove-watermark"));
+  const hasText = rows.some((row) => row.some((button) => button.callback_data === "ai:remove-text"));
+  if (!hasWatermark || !hasText) {
+    rows.push([
+      { text: "🧹 Remove Watermark", callback_data: "ai:remove-watermark" },
+      { text: "📝 Remove Text", callback_data: "ai:remove-text" }
+    ]);
+  }
   return { ...replyMarkup, inline_keyboard: rows };
 }
 
@@ -29,8 +40,6 @@ function patchTelegramRequest(input, init) {
   try {
     if (method === "sendInvoice") {
       const body = JSON.parse(init.body);
-      // Telegram does not allow recurring Stars subscription invoices to be sent
-      // directly with sendInvoice. Premium is sold as a one-time 30-day purchase.
       delete body.subscription_period;
       return { ...init, body: JSON.stringify(body) };
     }
@@ -83,6 +92,30 @@ export default {
                 body: JSON.stringify({ callback_query_id: callback.id })
               });
             } catch {}
+
+            if (AI_ACTIONS.has(callback?.data)) {
+              const chatId = callback?.message?.chat?.id;
+              if (chatId) {
+                try {
+                  await handleAiCallback(env, token, chatId, callback.data, consumeAiOperation);
+                } catch (error) {
+                  console.error("IPX LAB AI error", error);
+                  try {
+                    await originalFetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: chatId,
+                        text: `❌ AI image processing error:\n\n${error?.message || "Unknown error"}`
+                      })
+                    });
+                  } catch (reportError) {
+                    console.error("IPX LAB AI error report failed", reportError);
+                  }
+                }
+              }
+              return new Response("OK", { status: 200 });
+            }
           }
         } catch {}
       }
