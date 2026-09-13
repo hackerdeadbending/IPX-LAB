@@ -10,6 +10,9 @@ function isAdmin(chatId, env) {
 async function ensureCoreTables(db) {
   await db.prepare(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL UNIQUE, username TEXT, first_name TEXT, language TEXT DEFAULT 'en', plan TEXT NOT NULL DEFAULT 'free', premium_until TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', stars_amount INTEGER, started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT, telegram_charge_id TEXT)`).run();
+  // Older IPX LAB databases may have been created before telegram_charge_id was added.
+  // Keep existing data and add the column automatically when it is missing.
+  try { await db.prepare(`ALTER TABLE subscriptions ADD COLUMN telegram_charge_id TEXT`).run(); } catch (_) {}
   await db.prepare(`CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS daily_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, photo_date TEXT NOT NULL, file_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(telegram_id, photo_date, file_id))`).run();
   await db.prepare(`CREATE TABLE IF NOT EXISTS admin_sessions (telegram_id TEXT PRIMARY KEY, target_telegram_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
