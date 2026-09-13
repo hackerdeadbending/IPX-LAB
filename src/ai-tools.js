@@ -15,7 +15,6 @@ async function tg(token, method, body) {
 }
 
 async function getSource(env, chatId) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY,file_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();
   return row?.file_id || null;
 }
@@ -31,6 +30,19 @@ function toBase64(bytes) {
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
+function validObjects(objects) {
+  return Array.isArray(objects)
+    ? objects.filter((item) =>
+        Number.isFinite(Number(item?.x_min)) &&
+        Number.isFinite(Number(item?.y_min)) &&
+        Number.isFinite(Number(item?.x_max)) &&
+        Number.isFinite(Number(item?.y_max)) &&
+        Number(item.x_max) > Number(item.x_min) &&
+        Number(item.y_max) > Number(item.y_min)
+      )
+    : [];
+}
+
 function makeMask(width, height, objects) {
   const mask = new Uint8Array(width * height);
   for (const object of objects) {
@@ -38,8 +50,8 @@ function makeMask(width, height, objects) {
     const y1 = clamp(Math.floor(Number(object.y_min) * height), 0, height - 1);
     const x2 = clamp(Math.ceil(Number(object.x_max) * width), x1 + 1, width);
     const y2 = clamp(Math.ceil(Number(object.y_max) * height), y1 + 1, height);
-    const padX = Math.max(3, Math.floor((x2 - x1) * 0.12));
-    const padY = Math.max(3, Math.floor((y2 - y1) * 0.12));
+    const padX = Math.max(4, Math.floor((x2 - x1) * 0.10));
+    const padY = Math.max(4, Math.floor((y2 - y1) * 0.10));
     const left = clamp(x1 - padX, 0, width - 1);
     const right = clamp(x2 + padX, left + 1, width);
     const top = clamp(y1 - padY, 0, height - 1);
@@ -54,23 +66,30 @@ async function detect(env, imageDataUrl, target) {
     task: "detect",
     image: imageDataUrl,
     target,
-    max_objects: 30
+    max_objects: 40,
+    temperature: 0.1
   });
-  return Array.isArray(result?.objects)
-    ? result.objects.filter((item) =>
-        Number.isFinite(Number(item?.x_min)) &&
-        Number.isFinite(Number(item?.y_min)) &&
-        Number.isFinite(Number(item?.x_max)) &&
-        Number.isFinite(Number(item?.y_max)) &&
-        Number(item.x_max) > Number(item.x_min) &&
-        Number(item.y_max) > Number(item.y_min)
-      )
-    : [];
+  return validObjects(result?.objects);
+}
+
+async function detectWithFallback(env, imageDataUrl, mode) {
+  if (mode === "text") {
+    // Moondream's detect target is a phrase describing an object. Short, natural
+    // phrases work better here than a comma-separated list of many categories.
+    const primary = await detect(env, imageDataUrl, "written words and letters");
+    if (primary.length) return primary;
+    return detect(env, imageDataUrl, "visible writing");
+  }
+
+  const primary = await detect(env, imageDataUrl, "watermark or logo");
+  if (primary.length) return primary;
+  return detect(env, imageDataUrl, "branded mark or text watermark");
 }
 
 async function downloadSource(env, token, chatId) {
   const fileId = await getSource(env, chatId);
   if (!fileId) return null;
+
   const file = await tg(token, "getFile", { file_id: fileId });
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
   if (!response.ok) throw new Error("Unable to download source image");
@@ -86,9 +105,6 @@ async function downloadSource(env, token, chatId) {
   return { bytes, width: Number(info.width), height: Number(info.height) };
 }
 
-const TEXT_TARGET = "visible text, words, letters, captions, signs, labels, text overlays, logos";
-const WATERMARK_TARGET = "watermark, logo, branded mark, translucent logo, text watermark, image overlay";
-
 export async function handleAiCallback(env, token, chatId, action, consumeAiOperation, languageCode = "en") {
   if (!env.AI || !env.DB) throw new Error("AI is not configured for this Worker yet");
   const mode = action === "ai:remove-watermark" ? "watermark" : action === "ai:remove-text" ? "text" : null;
@@ -101,7 +117,7 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
       chat_id: chatId,
       text: usage.premium
         ? (ru ? "🔒 Вы достигли лимита Premium AI: 3000 операций сегодня." : "🔒 You have reached the Premium AI limit of 3000 operations today.")
-        : (ru ? "🔒 Вы использовали 5 бесплатных AI-операций на этой неделе. Оформите Premium — до 3000 AI-операций в день." : "🔒 You have used your 5 free AI operations this week. Upgrade to Premium for up to 3000 AI operations per day.")
+        : (ru ? "🔒 Вы использовали 5 бесплатных AI-операций за последние 7 дней. Premium — до 3000 AI-операций в день." : "🔒 You have used your 5 free AI operations in the last 7 days. Premium gives up to 3000 AI operations per day.")
     });
     return true;
   }
@@ -114,15 +130,14 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
 
   const rawBase64 = toBase64(prepared.bytes);
   const dataUrl = `data:image/jpeg;base64,${rawBase64}`;
-  const target = mode === "watermark" ? WATERMARK_TARGET : TEXT_TARGET;
-  const objects = await detect(env, dataUrl, target);
+  const objects = await detectWithFallback(env, dataUrl, mode);
 
   if (!objects.length) {
     await tg(token, "sendMessage", {
       chat_id: chatId,
       text: mode === "watermark"
-        ? (ru ? "🔎 Не удалось уверенно найти водяной знак на этом изображении. Попробуйте фото, где он хорошо виден." : "🔎 I couldn't confidently detect a watermark in this image. Try an image where it is clearly visible.")
-        : (ru ? "🔎 Не удалось уверенно найти текст на этом изображении. Попробуйте фото, где текст хорошо виден." : "🔎 I couldn't confidently detect text in this image. Try an image where the text is clearly visible.")
+        ? (ru ? "🔎 Не удалось найти водяной знак или логотип. Попробуйте изображение, где он хорошо виден." : "🔎 I couldn't find a watermark or logo. Try an image where it is clearly visible.")
+        : (ru ? "🔎 Не удалось найти видимый текст. Если текст крупный и хорошо виден, попробуйте отправить фото ещё раз как изображение или файл." : "🔎 I couldn't find visible text. If the text is large and clear, try sending the image again as a photo or file.")
     });
     return true;
   }
@@ -130,16 +145,16 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
   const mask = makeMask(prepared.width, prepared.height, objects);
   const output = await env.AI.run(INPAINT_MODEL, {
     prompt: mode === "watermark"
-      ? "Restore the natural background and image details. Remove the detected watermark, logo or branded mark cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text or watermark."
-      : "Restore the natural background and image details. Remove the detected text, lettering or caption cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text.",
-    negative_prompt: "text, letters, words, watermark, logo, artifacts, distortion, duplicated objects",
+      ? "Cleanly remove the detected watermark or logo and reconstruct the hidden background. Preserve the real subject, lighting, texture, colors and composition. Do not invent objects and do not add text."
+      : "Cleanly remove the detected written words, letters or caption and reconstruct the hidden background. Preserve the real subject, lighting, texture, colors and composition. Do not invent objects and do not add text.",
+    negative_prompt: "text, letters, words, watermark, logo, artifacts, distortion, duplicated objects, blurry details",
     width: prepared.width,
     height: prepared.height,
     image_b64: rawBase64,
     mask,
-    num_steps: 20,
+    num_steps: 12,
     strength: 1,
-    guidance: 7.5
+    guidance: 7.0
   });
 
   const outputBytes = new Uint8Array(await new Response(output).arrayBuffer());
