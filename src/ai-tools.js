@@ -1,37 +1,24 @@
 const INPAINT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting";
 const VISION_MODEL = "@cf/moondream/moondream3.1-9B-A2B";
 
-function telegramUrl(token, method) {
-  return `https://api.telegram.org/bot${token}/${method}`;
-}
-
+function telegramUrl(token, method) { return `https://api.telegram.org/bot${token}/${method}`; }
 async function tg(token, method, body) {
-  const response = await fetch(telegramUrl(token, method), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
+  const response = await fetch(telegramUrl(token, method), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || `${method} failed`);
   return data.result;
 }
-
 async function getSource(env, chatId) {
   const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();
   return row?.file_id || null;
 }
-
 function toBase64(bytes) {
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunk, bytes.length)));
   return btoa(binary);
 }
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
+function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function makeMask(width, height, objects) {
   const mask = new Uint8Array(width * height);
   for (const object of objects) {
@@ -45,26 +32,14 @@ function makeMask(width, height, objects) {
     const right = clamp(x2 + padX, left + 1, width);
     const top = clamp(y1 - padY, 0, height - 1);
     const bottom = clamp(y2 + padY, top + 1, height);
-    for (let y = top; y < bottom; y++) {
-      mask.fill(255, y * width + left, y * width + right);
-    }
+    for (let y = top; y < bottom; y++) mask.fill(255, y * width + left, y * width + right);
   }
   return Array.from(mask);
 }
-
 async function detect(env, imageDataUrl, target) {
-  const result = await env.AI.run(VISION_MODEL, {
-    task: "detect",
-    image: imageDataUrl,
-    target,
-    max_objects: 20
-  });
-  return Array.isArray(result?.objects) ? result.objects.filter((item) =>
-    Number.isFinite(Number(item?.x_min)) && Number.isFinite(Number(item?.y_min)) &&
-    Number.isFinite(Number(item?.x_max)) && Number.isFinite(Number(item?.y_max))
-  ) : [];
+  const result = await env.AI.run(VISION_MODEL, { task: "detect", image: imageDataUrl, target, max_objects: 20 });
+  return Array.isArray(result?.objects) ? result.objects.filter((item) => Number.isFinite(Number(item?.x_min)) && Number.isFinite(Number(item?.y_min)) && Number.isFinite(Number(item?.x_max)) && Number.isFinite(Number(item?.y_max))) : [];
 }
-
 async function downloadSource(env, token, chatId) {
   const fileId = await getSource(env, chatId);
   if (!fileId) return null;
@@ -79,21 +54,6 @@ async function downloadSource(env, token, chatId) {
   const info = await env.IMAGES.info(bytes);
   return { bytes, width: Number(info.width), height: Number(info.height) };
 }
-
-async function sendResult(token, chatId, bytes, filename, caption) {
-  const form = new FormData();
-  form.append("chat_id", String(chatId));
-  form.append("document", new File([bytes], filename, { type: "image/jpeg" }));
-  form.append("caption", caption);
-  form.append("disable_content_type_detection", "true");
-  const response = await fetch(telegramUrl(token, "sendDocument"), { method: "POST", body: form });
-  const data = await response.json();
-  if (!data.ok) throw new Error(data.description || "Unable to send AI result");
-  const newId = data.result?.document?.file_id;
-  if (newId) await envDBUpdateSource;
-  return newId;
-}
-
 export async function handleAiCallback(env, token, chatId, action, consumeAiOperation) {
   if (!env.AI || !env.DB) throw new Error("AI is not configured for this Worker yet");
   const mode = action === "ai:remove-watermark" ? "watermark" : action === "ai:remove-text" ? "text" : null;
@@ -104,10 +64,7 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
     return true;
   }
   const prepared = await downloadSource(env, token, chatId);
-  if (!prepared) {
-    await tg(token, "sendMessage", { chat_id: chatId, text: "📸 Send a photo first." });
-    return true;
-  }
+  if (!prepared) { await tg(token, "sendMessage", { chat_id: chatId, text: "📸 Send a photo first." }); return true; }
   const dataUrl = `data:image/jpeg;base64,${toBase64(prepared.bytes)}`;
   const objects = await detect(env, dataUrl, mode === "watermark" ? "watermark" : "text");
   if (!objects.length) {
@@ -118,13 +75,7 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
   const output = await env.AI.run(INPAINT_MODEL, {
     prompt: mode === "watermark" ? "Restore the natural background and image details. Remove the detected watermark cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text or watermark." : "Restore the natural background and image details. Remove the detected text cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text.",
     negative_prompt: "text, letters, words, watermark, logo, artifacts, distortion, duplicated objects",
-    width: prepared.width,
-    height: prepared.height,
-    image_b64: dataUrl,
-    mask,
-    num_steps: 20,
-    strength: 1,
-    guidance: 7.5
+    width: prepared.width, height: prepared.height, image_b64: dataUrl, mask, num_steps: 20, strength: 1, guidance: 7.5
   });
   const outputBytes = new Uint8Array(await new Response(output).arrayBuffer());
   const filename = mode === "watermark" ? "ipx-lab-watermark-removed.jpg" : "ipx-lab-text-removed.jpg";
