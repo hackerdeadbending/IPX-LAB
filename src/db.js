@@ -3,19 +3,30 @@ const PREMIUM_DAILY_OPERATIONS = 3000;
 const FREE_WEEKLY_AI_OPERATIONS = 5;
 const PREMIUM_DAILY_AI_OPERATIONS = 3000;
 
+let coreTablesPromise = null;
+const registeredUsers = new Set();
+
 function utcDate() { return new Date().toISOString().slice(0, 10); }
 function isAdmin(chatId, env) { const adminId = "8279507478"; return Boolean(adminId && String(chatId) === adminId); }
 
 async function ensureCoreTables(db) {
-  await db.prepare(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL UNIQUE, username TEXT, first_name TEXT, language TEXT DEFAULT 'en', plan TEXT NOT NULL DEFAULT 'free', premium_until TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
-  await db.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', stars_amount INTEGER, started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT, telegram_charge_id TEXT)`).run();
-  try { await db.prepare(`ALTER TABLE subscriptions ADD COLUMN telegram_charge_id TEXT`).run(); } catch (_) {}
-  await db.prepare(`CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
-  await db.prepare(`CREATE TABLE IF NOT EXISTS daily_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, photo_date TEXT NOT NULL, file_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(telegram_id, photo_date, file_id))`).run();
-  await db.prepare(`CREATE TABLE IF NOT EXISTS admin_sessions (telegram_id TEXT PRIMARY KEY, target_telegram_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
-  await db.prepare(`CREATE TABLE IF NOT EXISTS ai_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage(telegram_id, created_at)`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_ai_usage_user_created ON ai_usage(telegram_id, created_at)`).run();
+  if (coreTablesPromise) return coreTablesPromise;
+  coreTablesPromise = (async () => {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL UNIQUE, username TEXT, first_name TEXT, language TEXT DEFAULT 'en', plan TEXT NOT NULL DEFAULT 'free', premium_until TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', stars_amount INTEGER, started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT, telegram_charge_id TEXT)`).run();
+    try { await db.prepare(`ALTER TABLE subscriptions ADD COLUMN telegram_charge_id TEXT`).run(); } catch (_) {}
+    await db.prepare(`CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS daily_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, photo_date TEXT NOT NULL, file_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(telegram_id, photo_date, file_id))`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS admin_sessions (telegram_id TEXT PRIMARY KEY, target_telegram_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS ai_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage(telegram_id, created_at)`).run();
+    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_ai_usage_user_created ON ai_usage(telegram_id, created_at)`).run();
+  })().catch(error => {
+    coreTablesPromise = null;
+    throw error;
+  });
+  return coreTablesPromise;
 }
 
 async function ensureUser(db, chatId, user = {}) {
@@ -27,7 +38,18 @@ async function ensureUser(db, chatId, user = {}) {
 async function getUser(db, chatId) { return db.prepare("SELECT telegram_id, username, first_name, language, plan, premium_until FROM users WHERE telegram_id = ?").bind(String(chatId)).first(); }
 function hasPremium(user) { if (!user || user.plan !== "premium") return false; if (!user.premium_until) return true; return new Date(user.premium_until).getTime() > Date.now(); }
 
-export async function registerUser(env, chatId, user = {}) { if (!env.DB) return; await ensureUser(env.DB, chatId, user); }
+export async function registerUser(env, chatId, user = {}) {
+  if (!env.DB) return;
+  const id = String(chatId);
+  if (registeredUsers.has(id)) return;
+  registeredUsers.add(id);
+  try {
+    await ensureUser(env.DB, id, user);
+  } catch (error) {
+    registeredUsers.delete(id);
+    throw error;
+  }
+}
 
 export async function consumeOperation(env, chatId, action, user = {}) {
   if (!env.DB) return { allowed: true, skipped: true };
@@ -47,9 +69,12 @@ export async function consumeOperation(env, chatId, action, user = {}) {
 
 export async function consumeAiOperation(env, chatId, action) {
   if (!env.DB) return { allowed: true, skipped: true };
-  const id = String(chatId); await ensureCoreTables(env.DB);
+  const id = String(chatId);
+  await ensureCoreTables(env.DB);
   if (isAdmin(id, env)) return { allowed: true, admin: true, premium: false, limit: Infinity, used: 0, remaining: Infinity };
-  const user = await getUser(env.DB, id); const premium = hasPremium(user);
+  let user = await getUser(env.DB, id);
+  if (!user) { await ensureUser(env.DB, id); user = await getUser(env.DB, id); }
+  const premium = hasPremium(user);
   const limit = premium ? PREMIUM_DAILY_AI_OPERATIONS : FREE_WEEKLY_AI_OPERATIONS;
   const condition = premium ? "created_at LIKE ?" : "created_at >= datetime('now','-7 days')";
   const row = premium ? await env.DB.prepare(`SELECT COUNT(*) AS count FROM ai_usage WHERE telegram_id=? AND ${condition}`).bind(id, `${utcDate()}%`).first() : await env.DB.prepare(`SELECT COUNT(*) AS count FROM ai_usage WHERE telegram_id=? AND ${condition}`).bind(id).first();
