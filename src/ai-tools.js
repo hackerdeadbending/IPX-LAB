@@ -15,8 +15,14 @@ async function tg(token, method, body) {
 }
 
 async function getSource(env, chatId) {
-  const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();
-  return row?.file_id || null;
+  try {
+    const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();
+    return row?.file_id || null;
+  } catch {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY,file_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    const row = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();
+    return row?.file_id || null;
+  }
 }
 
 function toBase64(bytes) {
@@ -74,8 +80,6 @@ async function detect(env, imageDataUrl, target) {
 
 async function detectWithFallback(env, imageDataUrl, mode) {
   if (mode === "text") {
-    // Moondream's detect target is a phrase describing an object. Short, natural
-    // phrases work better here than a comma-separated list of many categories.
     const primary = await detect(env, imageDataUrl, "written words and letters");
     if (primary.length) return primary;
     return detect(env, imageDataUrl, "visible writing");
