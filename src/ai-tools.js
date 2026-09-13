@@ -1,6 +1,5 @@
 const INPAINT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting";
 const VISION_MODEL = "@cf/moondream/moondream3.1-9B-A2B";
-
 function telegramUrl(token, method) { return `https://api.telegram.org/bot${token}/${method}`; }
 async function tg(token, method, body) {
   const response = await fetch(telegramUrl(token, method), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -65,7 +64,8 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
   }
   const prepared = await downloadSource(env, token, chatId);
   if (!prepared) { await tg(token, "sendMessage", { chat_id: chatId, text: "📸 Send a photo first." }); return true; }
-  const dataUrl = `data:image/jpeg;base64,${toBase64(prepared.bytes)}`;
+  const rawBase64 = toBase64(prepared.bytes);
+  const dataUrl = `data:image/jpeg;base64,${rawBase64}`;
   const objects = await detect(env, dataUrl, mode === "watermark" ? "watermark" : "text");
   if (!objects.length) {
     await tg(token, "sendMessage", { chat_id: chatId, text: mode === "watermark" ? "🔎 I couldn't confidently detect a watermark in this image." : "🔎 I couldn't confidently detect text in this image." });
@@ -75,7 +75,7 @@ export async function handleAiCallback(env, token, chatId, action, consumeAiOper
   const output = await env.AI.run(INPAINT_MODEL, {
     prompt: mode === "watermark" ? "Restore the natural background and image details. Remove the detected watermark cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text or watermark." : "Restore the natural background and image details. Remove the detected text cleanly. Preserve the original subject, lighting, colors and composition. Do not add any new text.",
     negative_prompt: "text, letters, words, watermark, logo, artifacts, distortion, duplicated objects",
-    width: prepared.width, height: prepared.height, image_b64: dataUrl, mask, num_steps: 20, strength: 1, guidance: 7.5
+    width: prepared.width, height: prepared.height, image_b64: rawBase64, mask, num_steps: 20, strength: 1, guidance: 7.5
   });
   const outputBytes = new Uint8Array(await new Response(output).arrayBuffer());
   const filename = mode === "watermark" ? "ipx-lab-watermark-removed.jpg" : "ipx-lab-text-removed.jpg";
