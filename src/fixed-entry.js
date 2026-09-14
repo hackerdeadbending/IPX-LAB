@@ -1,6 +1,6 @@
 import currentWorker from "./features.js";
 import baseWorker from "./entry.js";
-import { consumeAiOperation } from "./db.js";
+import { handleAiAction, isAiAction, addAiButtons } from "./ai-removal.js";
 
 const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
 const documentSourceChats = new Set();
@@ -8,7 +8,7 @@ const documentSourceChats = new Set();
 function addMainButtons(replyMarkup) {
   if (!replyMarkup?.inline_keyboard) return replyMarkup;
   const isMainMenu = replyMarkup.inline_keyboard.some((row) => row.some((button) => MAIN_ACTIONS.has(button.callback_data)));
-  return isMainMenu ? replyMarkup : replyMarkup;
+  return isMainMenu ? addAiButtons(replyMarkup) : replyMarkup;
 }
 
 function patchTelegramRequest(input, init) {
@@ -58,6 +58,10 @@ export default {
         const chatId = update?.message?.chat?.id;
         const isImageDocument = update?.message?.document?.mime_type?.toLowerCase?.().startsWith("image/");
         if (chatId && isImageDocument) documentSourceChats.add(String(chatId));
+        if (chatId && update?.callback_query?.data && isAiAction(update.callback_query.data)) {
+          const handled = await handleAiAction(env, update.callback_query);
+          if (handled) return new Response("OK", { status: 200 });
+        }
         if (chatId && (text === "/start" || text === "/help") && env.TELEGRAM_BOT_TOKEN) {
           const ru = String(update?.message?.from?.language_code || "").toLowerCase().startsWith("ru");
           await originalFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: ru ? "👋 Добро пожаловать в IPX LAB Photo!\n\n📸 Отправьте мне фото, и инструменты редактирования появятся автоматически." : "👋 Welcome to IPX LAB Photo!\n\n📸 Send me a photo and your editing tools will appear automatically." }) });
