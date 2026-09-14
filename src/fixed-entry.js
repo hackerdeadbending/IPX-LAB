@@ -55,7 +55,7 @@ export default {
       try {
         const update = await request.clone().json();
         const text = update?.message?.text?.trim();
-        const chatId = update?.message?.chat?.id;
+        const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
         const isImageDocument = update?.message?.document?.mime_type?.toLowerCase?.().startsWith("image/");
         if (chatId && isImageDocument) documentSourceChats.add(String(chatId));
         if (chatId && update?.callback_query?.data && isAiAction(update.callback_query.data)) {
