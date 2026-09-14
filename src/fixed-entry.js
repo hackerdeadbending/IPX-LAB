@@ -12,25 +12,13 @@ function patchTelegramRequest(input, init) {
   try {
     if (method === "sendInvoice") { const body = JSON.parse(init.body); delete body.subscription_period; return { ...init, body: JSON.stringify(body) }; }
     if (!["sendMessage", "sendPhoto", "sendDocument"].includes(method)) return init;
-    if (init.body instanceof FormData) { const form = init.body; if (form.has("document")) form.set("disable_content_type_detection", "true"); return { ...init, body: form }; }
+    if (init.body instanceof FormData) {
+      const form = init.body;
+      if (form.has("document")) form.set("disable_content_type_detection", "true");
+      return { ...init, body: form };
+    }
   } catch (error) { console.error("IPX LAB Telegram patch error", error); }
   return init;
-}
-
-async function sendPatchedFetch(originalFetch, input, init) {
-  const url = typeof input === "string" ? input : input?.url || "";
-  const method = url.split("/").pop();
-  if (method !== "sendPhoto" || !init?.body || documentSourceChats.size === 0) return originalFetch(input, patchTelegramRequest(input, init));
-  try {
-    const body = init.body instanceof FormData ? null : JSON.parse(init.body);
-    const chatId = body ? String(body.chat_id || "") : "";
-    if (body?.photo && documentSourceChats.has(chatId)) {
-      const documentBody = { ...body, document: body.photo }; delete documentBody.photo;
-      const documentUrl = url.replace(/\/sendPhoto$/, "/sendDocument"); documentSourceChats.delete(chatId);
-      return originalFetch(documentUrl, { ...patchTelegramRequest(documentUrl, { ...init, body: JSON.stringify(documentBody) }) });
-    }
-  } catch (error) { console.error("IPX LAB document-photo compatibility error", error); }
-  return originalFetch(input, patchTelegramRequest(input, init));
 }
 
 async function prepareFilterSource(env, chatId, action) {
@@ -60,7 +48,9 @@ export default {
         const chatId = update?.message?.chat?.id;
         const callbackAction = update?.callback_query?.data;
         const isImage = Boolean(update?.message?.photo?.length) || update?.message?.document?.mime_type?.toLowerCase?.().startsWith("image/");
-        if (chatId && isImage) { documentSourceChats.add(String(chatId)); if (env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run(); }
+        const isImageDocument = update?.message?.document?.mime_type?.toLowerCase?.().startsWith("image/");
+        if (chatId && isImage && env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run();
+        if (chatId && isImageDocument) documentSourceChats.add(String(chatId));
         if (chatId && callbackAction) await prepareFilterSource(env, chatId, callbackAction);
         if (chatId && (text === "/start" || text === "/help") && env.TELEGRAM_BOT_TOKEN) {
           const ru = String(update?.message?.from?.language_code || "").toLowerCase().startsWith("ru");
