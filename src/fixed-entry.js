@@ -1,7 +1,7 @@
 import currentWorker from "./features.js";
 import baseWorker from "./entry.js";
 
-const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
+const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info", "ai:watermark", "ai:text", "ai:background"]);
 const FILTER_ACTIONS = new Set(["filter:cinema", "filter:dark-cinema", "filter:golden", "filter:night", "filter:warm", "filter:cold", "filter:vintage", "filter:35mm", "filter:noir", "filter:moody", "filter:bw", "filter:dramatic-bw"]);
 
 async function prepareFilterSource(env, chatId, action) {
