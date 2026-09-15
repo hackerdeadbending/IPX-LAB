@@ -7,7 +7,7 @@ const FILTERS = {
   "filter:golden": { name: "Golden Hour", transform: { saturation: 1.12, contrast: 1.08, brightness: 1.05, gamma: 0.96 }, filename: "ipx-lab-golden-hour.jpg" },
   "filter:night": { name: "Night Film", transform: { saturation: 0.72, contrast: 1.22, brightness: 0.78, gamma: 1.12, sharpen: 1 }, filename: "ipx-lab-night-film.jpg" },
   "filter:warm": { name: "Warm Film", transform: { saturation: 1.06, contrast: 1.04, brightness: 1.02, gamma: 0.98 }, filename: "ipx-lab-warm-film.jpg" },
-  "filter:cold": { name: "Cold Film", transform: { saturation: 0.86, contrast: 1.1, brightness: 1.01, gamma: 1.02 }, filename: "ipx-lab-cold-film.jpg" },
+  "filter:cold": { name: "Cold Film", transform: { saturation: 0.86, contrast: 1.1, brightness: 1.01, gamma: 1.02, sharpen: 1 }, filename: "ipx-lab-cold-film.jpg" },
   "filter:vintage": { name: "Vintage Film", transform: { saturation: 0.76, contrast: 0.94, brightness: 1.02, gamma: 0.94 }, filename: "ipx-lab-vintage.jpg" },
   "filter:35mm": { name: "35mm", transform: { saturation: 0.9, contrast: 1.12, brightness: 0.98, gamma: 1.03, sharpen: 1 }, filename: "ipx-lab-35mm.jpg" },
   "filter:noir": { name: "Noir", transform: { saturation: 0, contrast: 1.32, brightness: 0.94, gamma: 1.05, sharpen: 1.5 }, filename: "ipx-lab-noir.jpg" },
@@ -16,6 +16,8 @@ const FILTERS = {
   "filter:dramatic-bw": { name: "Dramatic B&W", transform: { saturation: 0, contrast: 1.38, brightness: 0.92, gamma: 1.08, sharpen: 1.5 }, filename: "ipx-lab-dramatic-bw.jpg" }
 };
 
+const AI_ACTIONS = new Set(["ai:watermark", "ai:text", "ai:background"]);
+
 function telegramUrl(token, method) { return `https://api.telegram.org/bot${token}/${method}`; }
 async function tg(token, method, body) {
   const r = await fetch(telegramUrl(token, method), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -23,7 +25,6 @@ async function tg(token, method, body) {
   if (!data.ok) throw new Error(data.description || `${method} failed`);
   return data.result;
 }
-function sourceId(message) { if (message?.photo?.length) return message.photo.at(-1).file_id; if (message?.document?.mime_type?.startsWith("image/")) return message.document.file_id; return null; }
 async function source(env, chatId) {
   if (!env.DB) return null;
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY,file_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
@@ -35,6 +36,9 @@ async function sendPremium(token, chatId, amount) {
 }
 async function showFilters(token, chatId) {
   await tg(token, "sendMessage", { chat_id: chatId, text: "🎬 Filters\n\nGive your photo a cinematic, film or professional look.", reply_markup: { inline_keyboard: [[{text:"🎬 Cinema",callback_data:"filter:cinema"},{text:"🌑 Dark Cinema",callback_data:"filter:dark-cinema"}],[{text:"🌅 Golden Hour",callback_data:"filter:golden"},{text:"🌃 Night Film",callback_data:"filter:night"}],[{text:"🟠 Warm Film",callback_data:"filter:warm"},{text:"🔵 Cold Film",callback_data:"filter:cold"}],[{text:"🎞 35mm",callback_data:"filter:35mm"},{text:"📽 Vintage Film",callback_data:"filter:vintage"}],[{text:"🖤 Noir",callback_data:"filter:noir"},{text:"🌫 Moody",callback_data:"filter:moody"}],[{text:"⚫ Black & White",callback_data:"filter:bw"},{text:"🎭 Dramatic B&W",callback_data:"filter:dramatic-bw"}],[{text:"↩️ Back",callback_data:"back"}]] } });
+}
+async function showAI(token, chatId) {
+  await tg(token, "sendMessage", { chat_id: chatId, text: "🪄 AI Tools\n\nRemove unwanted elements from your photo using the AI image processor.", reply_markup: { inline_keyboard: [[{text:"🧹 Remove Watermark",callback_data:"ai:watermark"}],[{text:"✏️ Remove Text",callback_data:"ai:text"}],[{text:"🖼 Remove Background",callback_data:"ai:background"}],[{text:"↩️ Back",callback_data:"back"}]] } });
 }
 async function applyFilter(env, token, chatId, action) {
   const preset = FILTERS[action];
@@ -52,11 +56,45 @@ async function applyFilter(env, token, chatId, action) {
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], preset.filename, {type:"image/jpeg"}));
   form.append("caption", `🎬 ${preset.name}\n\nFilter applied. You can continue editing this result.`);
-  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ]] }));
+  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"🪄 AI Tools",callback_data:"ai"},{text:"⭐ Buy Premium",callback_data:"premium"} ]] }));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token,"sendDocument"), {method:"POST", body:form});
   const data = await sent.json();
   if (!data.ok) throw new Error(data.description || "Unable to send filtered image");
+  const newId = data.result?.document?.file_id;
+  if (newId && env.DB) await env.DB.prepare("INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP").bind(String(chatId),newId).run();
+  return true;
+}
+async function applyAI(env, token, chatId, mode) {
+  if (!env.AI_API_URL) throw new Error("AI service is not connected yet. Set AI_API_URL first.");
+  const fileId = await source(env, chatId);
+  if (!fileId) { await tg(token, "sendMessage", {chat_id: chatId, text: "📸 Send a photo first."}); return true; }
+  const file = await tg(token, "getFile", {file_id: fileId});
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+  if (!response.ok || !response.body) throw new Error("Unable to download current photo");
+  const bytes = await response.arrayBuffer();
+  const form = new FormData();
+  form.append("image", new File([bytes], "input.jpg", {type: response.headers.get("content-type") || "image/jpeg"}));
+  form.append("mode", mode);
+  const headers = env.AI_API_KEY ? { "x-api-key": env.AI_API_KEY } : {};
+  const aiResponse = await fetch(env.AI_API_URL.replace(/\/$/, "") + "/v1/remove", {method:"POST", headers, body:form});
+  if (!aiResponse.ok) {
+    let detail = `AI service error (${aiResponse.status})`;
+    try { const body = await aiResponse.json(); if (body?.detail) detail = body.detail; } catch {}
+    throw new Error(detail);
+  }
+  const outputBytes = await aiResponse.arrayBuffer();
+  const filename = mode === "background" ? "ipx-lab-background.png" : `ipx-lab-ai-${mode}.png`;
+  const labels = {watermark:"Watermark removed",text:"Text removed",background:"Background removed"};
+  const formOut = new FormData();
+  formOut.append("chat_id", String(chatId));
+  formOut.append("document", new File([outputBytes], filename, {type:"image/png"}));
+  formOut.append("caption", `🪄 AI — ${labels[mode]}\n\nYou can continue editing this result.`);
+  formOut.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🪄 AI Tools",callback_data:"ai"},{text:"🎬 Filters",callback_data:"filters"} ],[ {text:"⭐ Buy Premium",callback_data:"premium"} ]] }));
+  formOut.append("disable_content_type_detection", "true");
+  const sent = await fetch(telegramUrl(token,"sendDocument"), {method:"POST", body:formOut});
+  const data = await sent.json();
+  if (!data.ok) throw new Error(data.description || "Unable to send AI result");
   const newId = data.result?.document?.file_id;
   if (newId && env.DB) await env.DB.prepare("INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP").bind(String(chatId),newId).run();
   return true;
@@ -84,7 +122,8 @@ function addPremiumAndFilters(markup, chatId, env) {
   const rows = markup.inline_keyboard.map(r => [...r]);
   const hasFilters = rows.some(row => row.some(b => b.callback_data === "filters"));
   const hasPremium = rows.some(row => row.some(b => b.callback_data === "premium"));
-  if (!hasFilters || !hasPremium) rows.push([{text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"}]);
+  const hasAI = rows.some(row => row.some(b => b.callback_data === "ai"));
+  if (!hasFilters || !hasPremium || !hasAI) rows.push([{text:"🎬 Filters",callback_data:"filters"},{text:"🪄 AI Tools",callback_data:"ai"},{text:"⭐ Buy Premium",callback_data:"premium"}]);
   if (isAdmin(chatId, env) && !rows.some(row => row.some(b => b.callback_data === "admin"))) rows.push([{text:"👑 Admin",callback_data:"admin"}]);
   return {inline_keyboard:rows};
 }
@@ -168,6 +207,8 @@ export default {
     if (update?.callback_query) {
       const action = update.callback_query.data || "";
       if (action === "filters") { await showFilters(token,chatId); return new Response("OK"); }
+      if (action === "ai") { await showAI(token,chatId); return new Response("OK"); }
+      if (AI_ACTIONS.has(action)) { try { await applyAI(env,token,chatId,action.slice(3)); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } return new Response("OK"); }
       if (FILTERS[action]) { try { await applyFilter(env,token,chatId,action); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } return new Response("OK"); }
       if (action === "premium") { await sendPremium(token,chatId,250); return new Response("OK"); }
       if (action === "admin") { await adminPanel(env,token,chatId); return new Response("OK"); }
