@@ -58,7 +58,7 @@ async function transformImage(env,token,chatId,fileId,action){
     return;
   }
   let transform={fit:"scale-down"};let outputFormat="image/jpeg";let quality=88;let filename="ipx-lab-result.jpg";let caption="✅ Done";
-  else if(action==="safe-share:metadata"){transform={fit:"scale-down",metadata:"none"};quality=100;filename="ipx-lab-safe-share-metadata.jpg";caption="🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed";}
+  if(action==="safe-share:metadata"){transform={fit:"scale-down",metadata:"none"};quality=100;filename="ipx-lab-safe-share-metadata.jpg";caption="🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed";}
   else if(action==="safe-share:size"){transform={width:2000,fit:"scale-down"};quality=90;filename="ipx-lab-safe-share-2000px.jpg";caption="🛡️ Safe Share copy ready\n\n✓ Long edge limited to 2000 px";}
   else if(action==="safe-share:both"){transform={width:2000,fit:"scale-down",metadata:"none"};quality=90;filename="ipx-lab-safe-share.jpg";caption="🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ Long edge limited to 2000 px";}
   else if(action.startsWith("resize:")){
@@ -72,7 +72,7 @@ async function transformImage(env,token,chatId,fileId,action){
     if(!Number.isInteger(width)||!Number.isInteger(height)||width<50||width>10000||height<50||height>10000)throw new Error("Invalid exact size");
     transform={width,height,fit:"contain"};filename=`ipx-lab-exact-${width}x${height}.jpg`;caption=`📏 Exact size complete\n\n${width} × ${height} px`;
   }
-  else if(action.startsWith("compress:")){quality=Number(action.split(":")[1]);if(![50,70,85].includes(quality))throw new Error("Invalid compression quality");filename=`ipx-lab-compressed-${quality}.jpg`;caption=`🗜️ Compression complete\n\nQuality: ${quality}%`;}
+  else if(action.startsWith("compress:")){quality=Number(action.split(":")[1]);if(![50,70,85].includes(quality))throw new Error("Invalid compression quality");const sourceInfo=await env.IMAGES.info(source.body);const sourceFormat=String(sourceInfo?.format||"jpeg").toLowerCase();const compressionFormats={"jpeg":["image/jpeg","jpg"],"jpg":["image/jpeg","jpg"],"webp":["image/webp","webp"],"avif":["image/avif","avif"],"png":["image/png","png"]};const compressionFormat=compressionFormats[sourceFormat]||["image/jpeg","jpg"];outputFormat=compressionFormat[0];filename=`ipx-lab-compressed-${quality}.${compressionFormat[1]}`;caption=`🗜️ Compression complete\n\nQuality: ${quality}%`;}
   else if(conversion(action)){const [format,ext]=conversion(action);outputFormat=format;quality=format==="image/png"||format==="image/gif"?undefined:88;filename=`ipx-lab-converted.${ext}`;caption=`🔄 Conversion complete\n\nFormat: ${ext.toUpperCase()}`;}
   else if(action.startsWith("crop:")){const [,ratioW,ratioH]=action.split(":");const w=Number(ratioW);const h=Number(ratioH);if(!Number.isFinite(w)||!Number.isFinite(h)||w<=0||h<=0)throw new Error("Invalid crop ratio");const base=1200;const width=w>=h?base:Math.round(base*w/h);const height=w>=h?Math.round(base*h/w):base;transform={width,height,fit:"cover"};filename=`ipx-lab-crop-${ratioW}x${ratioH}.jpg`;caption=`✂️ Crop complete\n\nRatio: ${ratioW}:${ratioH}`;}
   else throw new Error("Unknown image action");
