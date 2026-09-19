@@ -28,19 +28,20 @@ async function sendTransformedFile(token,chatId,response,filename,caption){const
 function readAscii(bytes,start,length){let text="";for(let i=0;i<length&&start+i<bytes.length;i++)text+=String.fromCharCode(bytes[start+i]);return text;}
 function readU32BE(bytes,pos){return (((bytes[pos]<<24)>>>0)|(bytes[pos+1]<<16)|(bytes[pos+2]<<8)|bytes[pos+3])>>>0;}
 function readU32LE(bytes,pos){return (bytes[pos]|(bytes[pos+1]<<8)|(bytes[pos+2]<<16)|(bytes[pos+3]<<24))>>>0;}
+function appendBytes(out,bytes,start=0,end=bytes.length){for(let i=start;i<end;i++)out.push(bytes[i]);}
 function stripJpegMetadata(bytes){
   if(bytes.length<2||bytes[0]!==255||bytes[1]!==216)throw new Error("Invalid JPEG file");
   const out=[bytes[0],bytes[1]];let pos=2;
   while(pos<bytes.length){
-    if(bytes[pos]!==255){out.push(...bytes.slice(pos));break;}
+    if(bytes[pos]!==255){appendBytes(out,bytes,pos);break;}
     const markerPos=pos;while(pos<bytes.length&&bytes[pos]===255)pos++;if(pos>=bytes.length)break;
     const marker=bytes[pos++];
     if(marker===217){out.push(255,marker);break;}
-    if(marker===218){out.push(...bytes.slice(markerPos));break;}
-    if(marker===1||(marker>=208&&marker<=215)){out.push(...bytes.slice(markerPos,pos));continue;}
+    if(marker===218){appendBytes(out,bytes,markerPos);break;}
+    if(marker===1||(marker>=208&&marker<=215)){appendBytes(out,bytes,markerPos,pos);continue;}
     if(pos+1>=bytes.length)throw new Error("Invalid JPEG segment");
     const length=(bytes[pos]<<8)|bytes[pos+1];if(length<2||pos+length>bytes.length)throw new Error("Invalid JPEG segment length");
-    if(!(marker===254||marker===225||marker===237))out.push(...bytes.slice(markerPos,pos+length));
+    if(!(marker===254||marker===225||marker===237))appendBytes(out,bytes,markerPos,pos+length);
     pos+=length;
   }
   return new Uint8Array(out);
@@ -50,7 +51,7 @@ function stripPngMetadata(bytes){
   const out=[];let pos=0;
   while(pos+12<=bytes.length){
     const length=readU32BE(bytes,pos);const end=pos+12+length;if(end>bytes.length)throw new Error("Invalid PNG chunk");
-    const type=readAscii(bytes,pos+4,4);if(!["eXIf","tEXt","zTXt","iTXt"].includes(type))out.push(...bytes.slice(pos,end));
+    const type=readAscii(bytes,pos+4,4);if(!["eXIf","tEXt","zTXt","iTXt"].includes(type))appendBytes(out,bytes,pos,end);
     pos=end;if(type==="IEND")break;
   }
   if(pos!==bytes.length)throw new Error("Invalid PNG structure");
@@ -58,10 +59,10 @@ function stripPngMetadata(bytes){
 }
 function stripWebpMetadata(bytes){
   if(bytes.length<12||readAscii(bytes,0,4)!=="RIFF"||readAscii(bytes,8,4)!=="WEBP")throw new Error("Invalid WebP file");
-  const out=Array.from(bytes.slice(0,12));let pos=12;
+  const out=[];appendBytes(out,bytes,0,12);let pos=12;
   while(pos+8<=bytes.length){
     const size=readU32LE(bytes,pos+4);const end=pos+8+size+(size&1);if(end>bytes.length)throw new Error("Invalid WebP chunk");
-    const type=readAscii(bytes,pos,4);if(type!=="EXIF"&&type!=="XMP ")out.push(...bytes.slice(pos,end));pos=end;
+    const type=readAscii(bytes,pos,4);if(type!=="EXIF"&&type!=="XMP ")appendBytes(out,bytes,pos,end);pos=end;
   }
   if(pos!==bytes.length)throw new Error("Invalid WebP structure");
   const riffSize=out.length-8;out[4]=riffSize&255;out[5]=(riffSize>>>8)&255;out[6]=(riffSize>>>16)&255;out[7]=(riffSize>>>24)&255;
@@ -69,18 +70,18 @@ function stripWebpMetadata(bytes){
 }
 function stripGifMetadata(bytes){
   if(bytes.length<13)throw new Error("Invalid GIF file");const header=readAscii(bytes,0,6);if(header!=="GIF87a"&&header!=="GIF89a")throw new Error("Invalid GIF file");
-  const out=Array.from(bytes.slice(0,13));const packed=bytes[10];let pos=13;if(packed&128)pos+=3*(1<<((packed&7)+1));if(pos>bytes.length)throw new Error("Invalid GIF color table");
+  const out=[];appendBytes(out,bytes,0,13);const packed=bytes[10];let pos=13;if(packed&128)pos+=3*(1<<((packed&7)+1));if(pos>bytes.length)throw new Error("Invalid GIF color table");
   while(pos<bytes.length){
     const marker=bytes[pos++];
     if(marker===59){out.push(59);break;}
     if(marker===33){
       if(pos>=bytes.length)throw new Error("Invalid GIF extension");const label=bytes[pos++];
       if(label===254){while(pos<bytes.length){const n=bytes[pos++];if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF comment");pos+=n;}continue;}
-      out.push(33,label);while(pos<bytes.length){const n=bytes[pos++];out.push(n);if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF extension");out.push(...bytes.slice(pos,pos+n));pos+=n;}continue;
+      out.push(33,label);while(pos<bytes.length){const n=bytes[pos++];out.push(n);if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF extension");appendBytes(out,bytes,pos,pos+n);pos+=n;}continue;
     }
     if(marker===44){
-      if(pos+9>bytes.length)throw new Error("Invalid GIF image descriptor");out.push(marker,...bytes.slice(pos,pos+9));const localPacked=bytes[pos+8];pos+=9;
-      if(localPacked&128){const tableSize=3*(1<<((localPacked&7)+1));if(pos+tableSize>bytes.length)throw new Error("Invalid GIF local color table");out.push(...bytes.slice(pos,pos+tableSize));pos+=tableSize;}
+      if(pos+9>bytes.length)throw new Error("Invalid GIF image descriptor");out.push(marker);appendBytes(out,bytes,pos,pos+9);const localPacked=bytes[pos+8];pos+=9;
+      if(localPacked&128){const tableSize=3*(1<<((localPacked&7)+1));if(pos+tableSize>bytes.length)throw new Error("Invalid GIF local color table");appendBytes(out,bytes,pos,pos+tableSize);pos+=tableSize;}
       if(pos>=bytes.length)throw new Error("Invalid GIF image data");out.push(bytes[pos++]);
       while(pos<bytes.length){const n=bytes[pos++];out.push(n);if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF image data");out.push(...bytes.slice(pos,pos+n));pos+=n;}continue;
     }
