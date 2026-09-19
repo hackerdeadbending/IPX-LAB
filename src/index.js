@@ -34,8 +34,30 @@ async function transformImage(env,token,chatId,fileId,action){
     const info=await env.IMAGES.info(source.body);const width=info?.width??"unknown";const height=info?.height??"unknown";const size=info?.fileSize?formatBytes(info.fileSize):"unknown";const format=info?.format||"unknown";const mp=Number.isFinite(info?.width)&&Number.isFinite(info?.height)?((info.width*info.height)/1000000).toFixed(2):"unknown";
     await telegram("sendMessage",token,{chat_id:chatId,text:`ℹ️ Image Info\n\nResolution: ${width} × ${height}\nFormat: ${format}\nSize: ${size}\nMegapixels: ${mp} MP`,reply_markup:MAIN_MENU});return;
   }
+  if(action==="metadata"){
+    const sourceBytes=await source.arrayBuffer();
+    const originalSize=sourceBytes.byteLength;
+    const info=await env.IMAGES.info(sourceBytes);
+    const formatMap={"jpeg":["image/jpeg","jpg"],"jpg":["image/jpeg","jpg"],"png":["image/png","png"],"webp":["image/webp","webp"],"avif":["image/avif","avif"],"gif":["image/gif","gif"]};
+    const sourceFormat=String(info?.format||"jpeg").toLowerCase();
+    const [metadataFormat,ext]=formatMap[sourceFormat]||["image/jpeg","jpg"];
+    const qualities=[100,95,92,90,88,85,82,80,75,70,65,60,55,50,45,40,35,30,25,20];
+    let bestResponse=null;let bestBytes=null;
+    for(const candidateQuality of qualities){
+      const result=await env.IMAGES.input(sourceBytes).transform({fit:"scale-down",metadata:"none"}).output({format:metadataFormat,...(metadataFormat==="image/png"?{quality:candidateQuality}:{quality:candidateQuality})});
+      const response=result.response();
+      if(!response.ok)throw new Error(`Image transformation failed (${response.status})`);
+      const bytes=await response.arrayBuffer();
+      if(!bestBytes||bytes.byteLength<bestBytes.byteLength){bestResponse=response;bestBytes=bytes;}
+      if(bytes.byteLength<=originalSize){bestResponse=response;bestBytes=bytes;break;}
+    }
+    const filename=`ipx-lab-metadata-removed.${ext}`;
+    const resultResponse=new Response(bestBytes,{status:200,headers:{"content-type":metadataFormat}});
+    const sent=await sendTransformedFile(token,chatId,resultResponse,filename,"✅ Metadata removed");
+    await rememberSource(env,chatId,sent.fileId);
+    return;
+  }
   let transform={fit:"scale-down"};let outputFormat="image/jpeg";let quality=88;let filename="ipx-lab-result.jpg";let caption="✅ Done";
-  if(action==="metadata"){transform={fit:"scale-down",metadata:"none"};quality=100;filename="ipx-lab-metadata-removed.jpg";caption="✅ Metadata removed";}
   else if(action==="safe-share:metadata"){transform={fit:"scale-down",metadata:"none"};quality=100;filename="ipx-lab-safe-share-metadata.jpg";caption="🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ GPS/EXIF removed";}
   else if(action==="safe-share:size"){transform={width:2000,fit:"scale-down"};quality=90;filename="ipx-lab-safe-share-2000px.jpg";caption="🛡️ Safe Share copy ready\n\n✓ Long edge limited to 2000 px";}
   else if(action==="safe-share:both"){transform={width:2000,fit:"scale-down",metadata:"none"};quality=90;filename="ipx-lab-safe-share.jpg";caption="🛡️ Safe Share ready\n\n✓ Hidden metadata removed\n✓ Long edge limited to 2000 px";}
