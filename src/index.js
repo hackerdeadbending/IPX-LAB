@@ -25,6 +25,76 @@ function formatBytes(bytes){if(!Number.isFinite(bytes))return "unknown";if(bytes
 async function getTelegramFile(token,fileId){const file=await telegram("getFile",token,{file_id:fileId});if(!file?.file_path)throw new Error("Telegram did not return a file path");const response=await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);if(!response.ok||!response.body)throw new Error(`Unable to download Telegram file (${response.status})`);return response;}
 async function sendPhotoMenu(token,chatId,fileId,isDocument=false){if(isDocument){await telegram("sendMessage",token,{chat_id:chatId,text:"📸 Photo file received\n\nChoose an operation:",reply_markup:MAIN_MENU});return;}await telegram("sendPhoto",token,{chat_id:chatId,photo:fileId,caption:"📸 Photo received\n\nChoose an operation:",reply_markup:MAIN_MENU});}
 async function sendTransformedFile(token,chatId,response,filename,caption){const bytes=await response.arrayBuffer();if(!bytes.byteLength)throw new Error("Image transformation returned an empty file");const contentType=response.headers.get("content-type")||"application/octet-stream";const form=new FormData();form.append("chat_id",String(chatId));form.append("document",new File([bytes],filename,{type:contentType}));form.append("caption",caption||"");form.append("reply_markup",JSON.stringify(MAIN_MENU));const result=await telegram("sendDocument",token,form);const fileId=result?.document?.file_id||result?.photo?.at(-1)?.file_id;if(!fileId)throw new Error("Telegram returned the transformed image but no reusable file_id");return {message:result,fileId};}
+function readAscii(bytes,start,length){let text="";for(let i=0;i<length&&start+i<bytes.length;i++)text+=String.fromCharCode(bytes[start+i]);return text;}
+function readU32BE(bytes,pos){return (((bytes[pos]<<24)>>>0)|(bytes[pos+1]<<16)|(bytes[pos+2]<<8)|bytes[pos+3])>>>0;}
+function readU32LE(bytes,pos){return (bytes[pos]|(bytes[pos+1]<<8)|(bytes[pos+2]<<16)|(bytes[pos+3]<<24))>>>0;}
+function stripJpegMetadata(bytes){
+  if(bytes.length<2||bytes[0]!==255||bytes[1]!==216)throw new Error("Invalid JPEG file");
+  const out=[bytes[0],bytes[1]];let pos=2;
+  while(pos<bytes.length){
+    if(bytes[pos]!==255){out.push(...bytes.slice(pos));break;}
+    const markerPos=pos;while(pos<bytes.length&&bytes[pos]===255)pos++;if(pos>=bytes.length)break;
+    const marker=bytes[pos++];
+    if(marker===217){out.push(255,marker);break;}
+    if(marker===218){out.push(...bytes.slice(markerPos));break;}
+    if(marker===1||(marker>=208&&marker<=215)){out.push(...bytes.slice(markerPos,pos));continue;}
+    if(pos+1>=bytes.length)throw new Error("Invalid JPEG segment");
+    const length=(bytes[pos]<<8)|bytes[pos+1];if(length<2||pos+length>bytes.length)throw new Error("Invalid JPEG segment length");
+    if(!(marker===254||marker===225||marker===237))out.push(...bytes.slice(markerPos,pos+length));
+    pos+=length;
+  }
+  return new Uint8Array(out);
+}
+function stripPngMetadata(bytes){
+  const sig=[137,80,78,71,13,10,26,10];if(bytes.length<8||!sig.every((v,i)=>bytes[i]===v))throw new Error("Invalid PNG file");
+  const out=[];let pos=0;
+  while(pos+12<=bytes.length){
+    const length=readU32BE(bytes,pos);const end=pos+12+length;if(end>bytes.length)throw new Error("Invalid PNG chunk");
+    const type=readAscii(bytes,pos+4,4);if(!["eXIf","tEXt","zTXt","iTXt"].includes(type))out.push(...bytes.slice(pos,end));
+    pos=end;if(type==="IEND")break;
+  }
+  if(pos!==bytes.length)throw new Error("Invalid PNG structure");
+  return new Uint8Array(out);
+}
+function stripWebpMetadata(bytes){
+  if(bytes.length<12||readAscii(bytes,0,4)!=="RIFF"||readAscii(bytes,8,4)!=="WEBP")throw new Error("Invalid WebP file");
+  const out=Array.from(bytes.slice(0,12));let pos=12;
+  while(pos+8<=bytes.length){
+    const size=readU32LE(bytes,pos+4);const end=pos+8+size+(size&1);if(end>bytes.length)throw new Error("Invalid WebP chunk");
+    const type=readAscii(bytes,pos,4);if(type!=="EXIF"&&type!=="XMP ")out.push(...bytes.slice(pos,end));pos=end;
+  }
+  if(pos!==bytes.length)throw new Error("Invalid WebP structure");
+  const riffSize=out.length-8;out[4]=riffSize&255;out[5]=(riffSize>>>8)&255;out[6]=(riffSize>>>16)&255;out[7]=(riffSize>>>24)&255;
+  return new Uint8Array(out);
+}
+function stripGifMetadata(bytes){
+  if(bytes.length<13)throw new Error("Invalid GIF file");const header=readAscii(bytes,0,6);if(header!=="GIF87a"&&header!=="GIF89a")throw new Error("Invalid GIF file");
+  const out=Array.from(bytes.slice(0,13));const packed=bytes[10];let pos=13;if(packed&128)pos+=3*(1<<((packed&7)+1));if(pos>bytes.length)throw new Error("Invalid GIF color table");
+  while(pos<bytes.length){
+    const marker=bytes[pos++];
+    if(marker===59){out.push(59);break;}
+    if(marker===33){
+      if(pos>=bytes.length)throw new Error("Invalid GIF extension");const label=bytes[pos++];
+      if(label===254){while(pos<bytes.length){const n=bytes[pos++];if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF comment");pos+=n;}continue;}
+      out.push(33,label);while(pos<bytes.length){const n=bytes[pos++];out.push(n);if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF extension");out.push(...bytes.slice(pos,pos+n));pos+=n;}continue;
+    }
+    if(marker===44){
+      if(pos+9>bytes.length)throw new Error("Invalid GIF image descriptor");out.push(marker,...bytes.slice(pos,pos+9));const localPacked=bytes[pos+8];pos+=9;
+      if(localPacked&128){const tableSize=3*(1<<((localPacked&7)+1));if(pos+tableSize>bytes.length)throw new Error("Invalid GIF local color table");out.push(...bytes.slice(pos,pos+tableSize));pos+=tableSize;}
+      if(pos>=bytes.length)throw new Error("Invalid GIF image data");out.push(bytes[pos++]);
+      while(pos<bytes.length){const n=bytes[pos++];out.push(n);if(n===0)break;if(pos+n>bytes.length)throw new Error("Invalid GIF image data");out.push(...bytes.slice(pos,pos+n));pos+=n;}continue;
+    }
+    throw new Error("Unsupported GIF structure");
+  }
+  return new Uint8Array(out);
+}
+function stripMetadataBytes(bytes){
+  if(bytes.length>=2&&bytes[0]===255&&bytes[1]===216)return stripJpegMetadata(bytes);
+  if(bytes.length>=8&&bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71)return stripPngMetadata(bytes);
+  if(bytes.length>=12&&readAscii(bytes,0,4)==="RIFF"&&readAscii(bytes,8,4)==="WEBP")return stripWebpMetadata(bytes);
+  if(bytes.length>=6){const h=readAscii(bytes,0,6);if(h==="GIF87a"||h==="GIF89a")return stripGifMetadata(bytes);}
+  throw new Error("Metadata removal is supported for JPEG, PNG, WebP and GIF files.");
+}
 function conversion(action){const formats={"convert:jpeg":["image/jpeg","jpg"],"convert:png":["image/png","png"],"convert:webp":["image/webp","webp"],"convert:avif":["image/avif","avif"],"convert:gif":["image/gif","gif"]};return formats[action]||null;}
 async function transformImage(env,token,chatId,fileId,action){
   if(!fileId)throw new Error("Current photo is no longer available. Please send the photo again.");
@@ -35,26 +105,17 @@ async function transformImage(env,token,chatId,fileId,action){
     await telegram("sendMessage",token,{chat_id:chatId,text:`ℹ️ Image Info\n\nResolution: ${width} × ${height}\nFormat: ${format}\nSize: ${size}\nMegapixels: ${mp} MP`,reply_markup:MAIN_MENU});return;
   }
   if(action==="metadata"){
-    const sourceBytes=await source.arrayBuffer();
-    const originalSize=sourceBytes.byteLength;
-    const info=await env.IMAGES.info(sourceBytes);
-    const formatMap={"jpeg":["image/jpeg","jpg"],"jpg":["image/jpeg","jpg"],"png":["image/png","png"],"webp":["image/webp","webp"],"avif":["image/avif","avif"],"gif":["image/gif","gif"]};
-    const sourceFormat=String(info?.format||"jpeg").toLowerCase();
-    const [metadataFormat,ext]=formatMap[sourceFormat]||["image/jpeg","jpg"];
-    const qualities=[100,95,92,90,88,85,82,80,75,70,65,60,55,50,45,40,35,30,25,20];
-    let bestResponse=null;let bestBytes=null;
-    for(const candidateQuality of qualities){
-      const result=await env.IMAGES.input(sourceBytes).transform({fit:"scale-down",metadata:"none"}).output({format:metadataFormat,...(metadataFormat==="image/png"?{quality:candidateQuality}:{quality:candidateQuality})});
-      const response=result.response();
-      if(!response.ok)throw new Error(`Image transformation failed (${response.status})`);
-      const bytes=await response.arrayBuffer();
-      if(!bestBytes||bytes.byteLength<bestBytes.byteLength){bestResponse=response;bestBytes=bytes;}
-      if(bytes.byteLength<=originalSize){bestResponse=response;bestBytes=bytes;break;}
-    }
-    const filename=`ipx-lab-metadata-removed.${ext}`;
-    const resultResponse=new Response(bestBytes,{status:200,headers:{"content-type":metadataFormat}});
-    const sent=await sendTransformedFile(token,chatId,resultResponse,filename,"✅ Metadata removed");
-    await rememberSource(env,chatId,sent.fileId);
+    const sourceBytes=new Uint8Array(await source.arrayBuffer());
+    const strippedBytes=stripMetadataBytes(sourceBytes);
+    if(strippedBytes.byteLength>=sourceBytes.byteLength)throw new Error("No removable metadata was found in this file.");
+    let ext="jpg",contentType="image/jpeg";
+    if(strippedBytes[0]===137){ext="png";contentType="image/png";}
+    else if(readAscii(strippedBytes,0,4)==="RIFF"){ext="webp";contentType="image/webp";}
+    else if(readAscii(strippedBytes,0,6)==="GIF87a"||readAscii(strippedBytes,0,6)==="GIF89a"){ext="gif";contentType="image/gif";}
+    const resultResponse=new Response(strippedBytes,{status:200,headers:{"content-type":contentType}});
+    const caption="🧹 Metadata removed\n\nOriginal: "+formatBytes(sourceBytes.byteLength)+"\nNew: "+formatBytes(strippedBytes.byteLength)+"\n✓ Image data was not re-encoded";
+    const saved=await sendTransformedFile(token,chatId,resultResponse,"ipx-lab-metadata-removed."+ext,caption);
+    await rememberSource(env,chatId,saved.fileId);
     return;
   }
   let transform={fit:"scale-down"};let outputFormat="image/jpeg";let quality=88;let filename="ipx-lab-result.jpg";let caption="✅ Done";
