@@ -45,6 +45,15 @@ export default {
     if (request.method === "POST") {
       try {
         const update = await request.clone().json();
+        const updateId = update?.update_id;
+        if (env.DB && Number.isInteger(updateId)) {
+          try {
+            await env.DB.prepare("CREATE TABLE IF NOT EXISTS processed_updates (update_id INTEGER PRIMARY KEY,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+            const mark = await env.DB.prepare("INSERT OR IGNORE INTO processed_updates (update_id) VALUES (?)").bind(updateId).run();
+            if (mark?.meta?.changes === 0) return new Response("OK", { status: 200 });
+            await env.DB.prepare("DELETE FROM processed_updates WHERE created_at < datetime('now','-1 day')").run();
+          } catch (error) { console.error("IPX LAB update dedupe error", error); }
+        }
         const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
         const callbackAction = update?.callback_query?.data;
         const isImage = Boolean(update?.message?.photo?.length) || update?.message?.document?.mime_type?.toLowerCase?.().startsWith("image/");
