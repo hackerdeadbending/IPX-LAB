@@ -26,15 +26,23 @@ function stripJpegMetadataBytes(input){
   const out=[0xff,0xd8];let i=2;
   while(i<bytes.length){
     if(bytes[i]!==0xff){for(;i<bytes.length;i++)out.push(bytes[i]);break;}
-    let marker=bytes[i+1];while(marker===0xff&&i+1<bytes.length){i++;marker=bytes[i+1];}
-    if(marker===0xda){for(;i<bytes.length;i++)out.push(bytes[i]);break;}
-    if(marker===0xd9){out.push(0xff,0xd9);break;}
-    if(marker===0x01||(marker>=0xd0&&marker<=0xd7)){out.push(0xff,marker);i+=2;continue;}
-    if(i+3>=bytes.length)break;
-    const len=(bytes[i+2]<<8)|bytes[i+3];if(len<2||i+2+len>bytes.length)break;
-    const keep=marker===0xe0||marker===0xdb||marker===0xc0||marker===0xc1||marker===0xc2||marker===0xc3||marker===0xc4||marker===0xc5||marker===0xc6||marker===0xc7||marker===0xc8||marker===0xc9||marker===0xca||marker===0xcb||marker===0xcc||marker===0xcd||marker===0xce||marker===0xcf;
-    if(keep)for(let j=i;j<i+2+len;j++)out.push(bytes[j]);
-    i+=2+len;
+    while(i<bytes.length&&bytes[i]===0xff)i++;
+    if(i>=bytes.length)break;
+    const marker=bytes[i++];
+    if(marker===0xd9){out.push(0xff,marker);break;}
+    if(marker===0xda){
+      out.push(0xff,marker);
+      if(i+1>=bytes.length)break;
+      const len=(bytes[i]<<8)|bytes[i+1];if(len<2||i+len>bytes.length)break;
+      for(let j=0;j<len;j++)out.push(bytes[i+j]);
+      i+=len;for(;i<bytes.length;i++)out.push(bytes[i]);break;
+    }
+    if(marker===0x01||(marker>=0xd0&&marker<=0xd7)){out.push(0xff,marker);continue;}
+    if(i+1>=bytes.length)break;
+    const len=(bytes[i]<<8)|bytes[i+1];if(len<2||i+len>bytes.length)break;
+    const isMetadata=marker===0xfe||(marker>=0xe0&&marker<=0xef);
+    if(!isMetadata){out.push(0xff,marker);for(let j=0;j<len;j++)out.push(bytes[i+j]);}
+    i+=len;
   }
   return new Uint8Array(out).buffer;
 }
