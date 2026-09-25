@@ -21,6 +21,23 @@ async function ensureSourceTable(env){if(!env.DB)return;await env.DB.prepare(`CR
 async function rememberSource(env,chatId,fileId){if(!env.DB||!chatId||!fileId)return;await ensureSourceTable(env);await env.DB.prepare(`INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP`).bind(String(chatId),fileId).run();}
 async function getRememberedSource(env,chatId){if(!env.DB||!chatId)return null;await ensureSourceTable(env);const row=await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();return row?.file_id||null;}
 async function resolveSourceFileId(env,chatId,message){return getSourceFileId(message)||await getRememberedSource(env,chatId);}
+function stripJpegMetadataBytes(input){
+  const bytes=new Uint8Array(input);if(bytes.length<4||bytes[0]!==0xff||bytes[1]!==0xd8)return input;
+  const out=[0xff,0xd8];let i=2;
+  while(i<bytes.length){
+    if(bytes[i]!==0xff){for(;i<bytes.length;i++)out.push(bytes[i]);break;}
+    let marker=bytes[i+1];while(marker===0xff&&i+1<bytes.length){i++;marker=bytes[i+1];}
+    if(marker===0xda){for(;i<bytes.length;i++)out.push(bytes[i]);break;}
+    if(marker===0xd9){out.push(0xff,0xd9);break;}
+    if(marker===0x01||(marker>=0xd0&&marker<=0xd7)){out.push(0xff,marker);i+=2;continue;}
+    if(i+3>=bytes.length)break;
+    const len=(bytes[i+2]<<8)|bytes[i+3];if(len<2||i+2+len>bytes.length)break;
+    const keep=marker===0xe0||marker===0xdb||marker===0xc0||marker===0xc1||marker===0xc2||marker===0xc3||marker===0xc4||marker===0xc5||marker===0xc6||marker===0xc7||marker===0xc8||marker===0xc9||marker===0xca||marker===0xcb||marker===0xcc||marker===0xcd||marker===0xce||marker===0xcf;
+    if(keep)for(let j=i;j<i+2+len;j++)out.push(bytes[j]);
+    i+=2+len;
+  }
+  return new Uint8Array(out).buffer;
+}
 function formatBytes(bytes){if(!Number.isFinite(bytes))return "unknown";if(bytes<1024)return `${bytes} B`;if(bytes<1024*1024)return `${(bytes/1024).toFixed(1)} KB`;return `${(bytes/1024/1024).toFixed(2)} MB`;}
 async function getTelegramFile(token,fileId){const file=await telegram("getFile",token,{file_id:fileId});if(!file?.file_path)throw new Error("Telegram did not return a file path");const response=await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);if(!response.ok||!response.body)throw new Error(`Unable to download Telegram file (${response.status})`);return response;}
 async function sendPhotoMenu(token,chatId,fileId,isDocument=false){if(isDocument){await telegram("sendMessage",token,{chat_id:chatId,text:"📸 Photo file received\n\nChoose an operation:",reply_markup:MAIN_MENU});return;}await telegram("sendPhoto",token,{chat_id:chatId,photo:fileId,caption:"📸 Photo received\n\nChoose an operation:",reply_markup:MAIN_MENU});}
