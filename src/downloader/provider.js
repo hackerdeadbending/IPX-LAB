@@ -1,5 +1,5 @@
 function cleanBase(value) {
-  return String(value || "").trim().replace(/\\/$/, "");
+  return String(value || "").trim().replace(/\/$/, "");
 }
 
 function providerHeaders(env) {
@@ -8,48 +8,64 @@ function providerHeaders(env) {
   return headers;
 }
 
+const RETRYABLE = new Set([502, 503, 504]);
+
 async function requestProvider(env, url) {
   const endpoint = cleanBase(env.SOCIAL_DOWNLOADER_API_URL);
   if (!endpoint) throw new Error("Social downloader is not configured");
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: providerHeaders(env),
-    body: JSON.stringify({
-      url,
-      videoQuality: "1080",
-      downloadMode: "auto",
-      filenameStyle: "pretty",
-      disableMetadata: true,
-      alwaysProxy: true,
-      tiktokH265: false,
-      tiktokFullAudio: true
-    })
-  });
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Downloader provider returned HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ""}`);
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: providerHeaders(env),
+        body: JSON.stringify({
+          url,
+          videoQuality: "1080",
+          downloadMode: "auto",
+          filenameStyle: "pretty",
+          disableMetadata: true,
+          alwaysProxy: true,
+          tiktokH265: false,
+          tiktokFullAudio: true
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (!data || typeof data !== "object") throw new Error("Downloader provider returned invalid JSON");
+        return data;
+      }
+
+      const body = await response.text().catch(() => "");
+      lastError = new Error(`Downloader provider returned HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ""}`);
+      if (!RETRYABLE.has(response.status)) break;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
   }
 
-  const data = await response.json();
-  if (!data || typeof data !== "object") throw new Error("Downloader provider returned invalid JSON");
-  return data;
+  throw lastError || new Error("Downloader provider request failed");
 }
 
 function extensionFromUrl(value) {
   try {
     const path = new URL(value).pathname.toLowerCase();
-    const match = path.match(/\\.(jpg|jpeg|png|webp|gif|mp4|mov|m4v|webm)(?:$|\\?)/);
+    const match = path.match(/\.(jpg|jpeg|png|webp|gif|mp4|mov|m4v|webm)(?:$|\?)/);
     return match?.[1] || null;
   } catch {
     return null;
   }
 }
 
-function mediaFromItem(item) {
+function mediaFromItem(item, index) {
   const type = item?.type === "photo" || item?.type === "video" || item?.type === "gif" ? item.type : null;
   if (!type || !item?.url) return null;
-  return { type, url: item.url, filename: extensionFromUrl(item.url) };
+  const ext = extensionFromUrl(item.url) || (type === "photo" ? "jpg" : type === "gif" ? "gif" : "mp4");
+  return { type, url: item.url, filename: `ipx-lab-${type}-${index + 1}.${ext}` };
 }
 
 export async function resolveSocialMedia(env, social) {
@@ -62,11 +78,12 @@ export async function resolveSocialMedia(env, social) {
   }
 
   if ((data.status === "redirect" || data.status === "tunnel") && data.url) {
+    const ext = extensionFromUrl(data.filename || data.url);
     return {
       kind: "single",
       url: data.url,
-      filename: data.filename || "ipx-lab-download",
-      type: extensionFromUrl(data.filename || data.url)
+      filename: data.filename || `ipx-lab-download${ext ? `.${ext}` : ""}`,
+      type: ext
     };
   }
 
