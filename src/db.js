@@ -7,7 +7,7 @@ let coreTablesPromise = null;
 const registeredUsers = new Set();
 
 function utcDate() { return new Date().toISOString().slice(0, 10); }
-function isAdmin(chatId, env) { const adminId = "8279507478"; return Boolean(adminId && String(chatId) === adminId); }
+function isAdmin(chatId, env) { const adminId = String(env?.ADMIN_TELEGRAM_ID || "8279507478"); return Boolean(adminId && String(chatId) === adminId); }
 
 async function ensureCoreTables(db) {
   if (coreTablesPromise) return coreTablesPromise;
