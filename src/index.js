@@ -68,7 +68,7 @@ async function transformImage(env,token,chatId,fileId,action){
   else if(action.startsWith("exact:")){
     const parts=action.split(":");const width=Number(parts[1]);const height=Number(parts[2]);
     if(!Number.isInteger(width)||!Number.isInteger(height)||width<50||width>10000||height<50||height>10000)throw new Error("Invalid exact size");
-    transform={width,height,fit:"cover",gravity:{x:0.5,y:0.5}};filename=`ipx-lab-exact-${width}x${height}.jpg`;caption=`📏 Exact size complete\n\n${width} × ${height} px`;
+    transform={width,height,fit:"pad",background:"#ffffff"};filename=`ipx-lab-exact-${width}x${height}.jpg`;caption=`📏 Exact size complete\n\n${width} × ${height} px`;
   }
   else if(action.startsWith("compress:")){quality=Number(action.split(":")[1]);if(![50,70,85].includes(quality))throw new Error("Invalid compression quality");filename=`ipx-lab-compressed-${quality}.jpg`;caption=`🗜️ Compression complete\n\nQuality: ${quality}%`;}
   else if(conversion(action)){const [format,ext]=conversion(action);outputFormat=format;quality=format==="image/png"||format==="image/gif"?undefined:88;filename=`ipx-lab-converted.${ext}`;caption=`🔄 Conversion complete\n\nFormat: ${ext.toUpperCase()}`;}
