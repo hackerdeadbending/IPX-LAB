@@ -1,6 +1,5 @@
 import currentWorker from "./features.js";
 import baseWorker from "./entry.js";
-import { handleSocialDownload } from "./downloader/index.js";
 
 const MAIN_ACTIONS = new Set(["resize", "exact-size", "compress", "convert", "crop", "safe-share", "metadata", "info"]);
 const FILTER_ACTIONS = new Set(["filter:cinema", "filter:dark-cinema", "filter:golden", "filter:night", "filter:warm", "filter:cold", "filter:vintage", "filter:35mm", "filter:noir", "filter:moody", "filter:bw", "filter:dramatic-bw"]);
@@ -52,29 +51,6 @@ export default {
         if (chatId && isImage && env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run();
         if (chatId && callbackAction) await prepareFilterSource(env, chatId, callbackAction);
         const replyText = update?.message?.reply_to_message?.text || update?.message?.reply_to_message?.caption || "";
-        if (update?.message?.text && env.SOCIAL_DOWNLOADER_API_URL) {
-          const socialText = update.message.text.trim();
-          if (/https?:\/\/(?:www\.|m\.)?(?:instagram\.com|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\/\S+/i.test(socialText)) {
-            try {
-              await handleSocialDownload(env, chatId, socialText);
-              return new Response("OK", { status: 200 });
-            } catch (error) {
-              console.error("IPX LAB social downloader error", error);
-              if (chatId && env.TELEGRAM_BOT_TOKEN) {
-                try {
-                  await fetch("https://api.telegram.org/bot" + env.TELEGRAM_BOT_TOKEN + "/sendMessage", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ chat_id: chatId, text: "❌ Download failed\n\n" + (error?.message || "Could not download this link.") })
-                  });
-                } catch (sendError) {
-                  console.error("IPX LAB social downloader notification error", sendError);
-                }
-              }
-              return new Response("OK", { status: 200 });
-            }
-          }
-        }
         if (update?.message?.text && /Enter the maximum width|Enter exact dimensions/i.test(replyText)) return await baseWorker.fetch(request, env, ctx);
       } catch (error) { console.error("IPX LAB filter wrapper error", error); }
     }
