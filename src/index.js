@@ -63,7 +63,7 @@ async function transformImage(env,token,chatId,fileId,action){
     const parts=action.split(":");const width=Number(parts[1]);const height=parts[2]?Number(parts[2]):null;
     if(!Number.isInteger(width)||width<50||width>10000)throw new Error("Invalid resize width");
     if(height!==null&&(!Number.isInteger(height)||height<50||height>10000))throw new Error("Invalid resize height");
-    transform=height===null?{width,fit:"scale-down"}:{width,height,fit:"squeeze"};filename=height?`ipx-lab-resize-${width}x${height}.jpg`:`ipx-lab-resize-${width}.jpg`;caption=`📐 Resize complete\n\n${width}${height?` × ${height}`:" px wide"}`;
+    transform=height===null?{width,fit:"scale-down"}:{width,height,fit:"pad",background:"#ffffff"};filename=height?`ipx-lab-resize-${width}x${height}.jpg`:`ipx-lab-resize-${width}.jpg`;caption=`📐 Resize complete\n\n${width}${height?` × ${height}`:" px wide"}`;
   }
   else if(action.startsWith("exact:")){
     const parts=action.split(":");const width=Number(parts[1]);const height=Number(parts[2]);
