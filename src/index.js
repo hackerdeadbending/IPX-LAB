@@ -72,7 +72,7 @@ async function transformImage(env,token,chatId,fileId,action){
     const mode=hasMode?parts[1]:"pad";
     const width=Number(parts[hasMode?2:1]);const height=Number(parts[hasMode?3:2]);
     if(!Number.isInteger(width)||!Number.isInteger(height)||width<50||width>10000||height<50||height>10000)throw new Error("Invalid exact size");
-    transform=mode==="crop"?{width,height,fit:"cover",gravity:"center"}:{width,height,fit:"pad",background:"#ffffff"};
+    transform=mode==="crop"?{width,height,fit:"cover"}:{width,height,fit:"pad",background:"#ffffff"};
     filename=`ipx-lab-exact-${mode}-${width}x${height}.jpg`;
     caption=mode==="crop"?`📏 Exact size complete\n\n${width} × ${height} px\n✂️ Minimal centered crop · no stretching`:`📏 Exact size complete\n\n${width} × ${height} px\n⬜ White padding · no crop`;
   }
