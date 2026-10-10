@@ -49,7 +49,7 @@ export default {
         const callbackAction = update?.callback_query?.data;
         const documentName = String(update?.message?.document?.file_name || "").toLowerCase();
         const documentMime = String(update?.message?.document?.mime_type || "").toLowerCase();
-        const isImage = Boolean(update?.message?.photo?.length) || documentMime.startsWith("image/") || /\\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(documentName);
+        const isImage = Boolean(update?.message?.photo?.length) || documentMime.startsWith("image/") || /\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(documentName);
         if (chatId && isImage && env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run();
         if (chatId && callbackAction) await prepareFilterSource(env, chatId, callbackAction);
         const replyText = update?.message?.reply_to_message?.text || update?.message?.reply_to_message?.caption || "";
