@@ -23,7 +23,7 @@ async function tg(token, method, body) {
   if (!data.ok) throw new Error(data.description || `${method} failed`);
   return data.result;
 }
-function isImageDocument(document) { if (!document) return false; const mime=String(document.mime_type||"").toLowerCase(); if (mime.startsWith("image/")) return true; const name=String(document.file_name||"").toLowerCase(); return /\\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(name); }
+function isImageDocument(document) { if (!document) return false; const mime=String(document.mime_type||"").toLowerCase(); if (mime.startsWith("image/")) return true; const name=String(document.file_name||"").toLowerCase(); return /\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(name); }
 function sourceId(message) { if (message?.photo?.length) return message.photo.at(-1).file_id; if (isImageDocument(message?.document)) return message.document.file_id; return null; }
 async function source(env, chatId) {
   if (!env.DB) return null;
