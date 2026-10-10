@@ -1,6 +1,6 @@
 const MAIN_MENU={inline_keyboard:[[{text:"📐 Resize",callback_data:"resize"},{text:"📏 Exact Size",callback_data:"exact-size"}],[{text:"🗜️ Compress",callback_data:"compress"},{text:"🔄 Convert",callback_data:"convert"}],[{text:"✂️ Crop",callback_data:"crop"},{text:"🛡️ Safe Share",callback_data:"safe-share"}],[{text:"🧹 Remove Metadata",callback_data:"metadata"}],[{text:"ℹ️ Image Info",callback_data:"info"}]]};
 const RESIZE_MENU={inline_keyboard:[[{text:"800 px",callback_data:"resize:800"},{text:"1200 px",callback_data:"resize:1200"},{text:"1600 px",callback_data:"resize:1600"}],[{text:"✏️ Custom width",callback_data:"resize:custom"}],[{text:"↩️ Back",callback_data:"back"}]]};
-const EXACT_SIZE_MENU={inline_keyboard:[[{text:"512 × 512",callback_data:"exact:512:512"},{text:"512 × 1900",callback_data:"exact:512:1900"}],[{text:"1080 × 1080",callback_data:"exact:1080:1080"},{text:"1080 × 1920",callback_data:"exact:1080:1920"}],[{text:"A5 — 1748 × 2480",callback_data:"exact:1748:2480"},{text:"A4 — 2480 × 3508",callback_data:"exact:2480:3508"}],[{text:"✏️ Any size",callback_data:"exact:custom"}],[{text:"↩️ Back",callback_data:"back"}]]};
+const EXACT_SIZE_MENU={inline_keyboard:[[{text:"512 × 512",callback_data:"exact:512:512"},{text:"512 × 1900",callback_data:"exact:512:1900"}],[{text:"1080 × 1080",callback_data:"exact:1080:1080"},{text:"1080 × 1920",callback_data:"exact:1080:1920"}],[{text:"A5 — 1748 × 2480",callback_data:"exact:1748:2480"},{text:"A4 — 2480 × 3508",callback_data:"exact:2480:3508"}],[{text:"⬜ White padding (no crop)",callback_data:"exact-mode:pad"},{text:"✂️ Minimal crop",callback_data:"exact-mode:crop"}],[{text:"✏️ Any size",callback_data:"exact:custom"}],[{text:"↩️ Back",callback_data:"back"}]]};
 const COMPRESS_MENU={inline_keyboard:[[{text:"High quality",callback_data:"compress:85"},{text:"Balanced",callback_data:"compress:70"}],[{text:"Small size",callback_data:"compress:50"}],[{text:"↩️ Back",callback_data:"back"}]]};
 const CONVERT_MENU={inline_keyboard:[[{text:"JPG",callback_data:"convert:jpeg"},{text:"PNG",callback_data:"convert:png"}],[{text:"WEBP",callback_data:"convert:webp"},{text:"AVIF",callback_data:"convert:avif"}],[{text:"GIF",callback_data:"convert:gif"}],[{text:"↩️ Back",callback_data:"back"}]]};
 const CROP_MENU={inline_keyboard:[[{text:"1:1",callback_data:"crop:1:1"},{text:"16:9",callback_data:"crop:16:9"}],[{text:"9:16",callback_data:"crop:9:16"},{text:"4:5",callback_data:"crop:4:5"}],[{text:"↩️ Back",callback_data:"back"}]]};
@@ -67,9 +67,14 @@ async function transformImage(env,token,chatId,fileId,action){
     transform=height===null?{width,fit:"scale-down"}:{width,height,fit:"pad",background:"#ffffff"};filename=height?`ipx-lab-resize-${width}x${height}.jpg`:`ipx-lab-resize-${width}.jpg`;caption=`📐 Resize complete\n\n${width}${height?` × ${height}`:" px wide"}`;
   }
   else if(action.startsWith("exact:")){
-    const parts=action.split(":");const width=Number(parts[1]);const height=Number(parts[2]);
+    const parts=action.split(":");
+    const hasMode=parts[1]==="pad"||parts[1]==="crop";
+    const mode=hasMode?parts[1]:"pad";
+    const width=Number(parts[hasMode?2:1]);const height=Number(parts[hasMode?3:2]);
     if(!Number.isInteger(width)||!Number.isInteger(height)||width<50||width>10000||height<50||height>10000)throw new Error("Invalid exact size");
-    transform={width,height,fit:"pad",background:"#ffffff"};filename=`ipx-lab-exact-${width}x${height}.jpg`;caption=`📏 Exact size complete\n\n${width} × ${height} px`;
+    transform=mode==="crop"?{width,height,fit:"cover",gravity:"center"}:{width,height,fit:"pad",background:"#ffffff"};
+    filename=`ipx-lab-exact-${mode}-${width}x${height}.jpg`;
+    caption=mode==="crop"?`📏 Exact size complete\n\n${width} × ${height} px\n✂️ Minimal centered crop · no stretching`:`📏 Exact size complete\n\n${width} × ${height} px\n⬜ White padding · no crop`;
   }
   else if(action.startsWith("compress:")){quality=Number(action.split(":")[1]);if(![50,70,85].includes(quality))throw new Error("Invalid compression quality");filename=`ipx-lab-compressed-${quality}.jpg`;caption=`🗜️ Compression complete\n\nQuality: ${quality}%`;}
   else if(conversion(action)){const [format,ext]=conversion(action);outputFormat=format;quality=format==="image/png"||format==="image/gif"?undefined:88;filename=`ipx-lab-converted.${ext}`;caption=`🔄 Conversion complete\n\nFormat: ${ext.toUpperCase()}`;}
@@ -84,11 +89,16 @@ async function showMenu(token,chatId,message,replyMarkup,fallbackText){if(messag
 export default{async fetch(request,env){
   if(request.method!=="POST")return textResponse("IPX LAB Photo is online.");const token=env.TELEGRAM_BOT_TOKEN;if(!token)return textResponse("Missing TELEGRAM_BOT_TOKEN",500);let update;try{update=await request.json();}catch{return textResponse("Invalid JSON",400);}
   try{
-    if(update.message){const chatId=update.message.chat?.id;if(!chatId)return textResponse("OK");const fileId=getSourceFileId(update.message);if(fileId){await rememberSource(env,chatId,fileId);await sendPhotoMenu(token,chatId,fileId,Boolean(isImageDocument(update.message.document)));return textResponse("OK");}if(update.message.text){const handled=await handleCustomResize(env,token,chatId,update.message.text,update.message.reply_to_message);if(handled)return textResponse("OK");}}
+    if(update.message){const chatId=update.message.chat?.id;if(!chatId)return textResponse("OK");const fileId=getSourceFileId(update.message);if(fileId){await rememberSource(env,chatId,fileId);await sendPhotoMenu(token,chatId,fileId,Boolean(isImageDocument(update.message.document)));return textResponse("OK");}if(update.message.text){
+      const exactCustom=String(update.message.text).match(/^exactcustom:(pad|crop):(\d{2,5}):(\d{2,5})$/);
+      if(exactCustom){const [,mode,width,height]=exactCustom;const sourceId=await resolveSourceFileId(env,chatId,update.message.reply_to_message);await transformImage(env,token,chatId,sourceId,`exact:${mode}:${width}:${height}`);return textResponse("OK");}
+      const handled=await handleCustomResize(env,token,chatId,update.message.text,update.message.reply_to_message);if(handled)return textResponse("OK");
+    }}
     if(update.callback_query){const query=update.callback_query;const chatId=query.message?.chat?.id;const action=query.data||"";await telegram("answerCallbackQuery",token,{callback_query_id:query.id});if(!chatId)return textResponse("OK");const callbackFileId=getSourceFileId(query.message);const fileId=callbackFileId||await getRememberedSource(env,chatId);
       if(action==="back")await showMenu(token,chatId,query.message,MAIN_MENU,"Choose an operation:");
       else if(action==="resize")await showMenu(token,chatId,query.message,RESIZE_MENU,"📐 Choose the maximum width or custom size:");
       else if(action==="exact-size")await showMenu(token,chatId,query.message,EXACT_SIZE_MENU,"📏 Choose exact output dimensions:");
+      else if(action==="exact-mode:pad"||action==="exact-mode:crop"){const mode=action.endsWith(":crop")?"crop":"pad";await telegram("sendMessage",token,{chat_id:chatId,text:mode==="crop"?"✓ Saved default: minimal crop":"✓ Saved default: white padding"});}
       else if(action==="resize:custom"){if(!fileId)throw new Error("Please send a photo first");await telegram("sendMessage",token,{chat_id:chatId,text:"✏️ Enter the maximum width.\n\nExample: 1500\nThe height keeps the original proportion.\n\nMinimum: 50 px · Maximum: 10000 px",reply_parameters:{message_id:query.message.message_id},reply_markup:{force_reply:true,input_field_placeholder:"1500"}});}
       else if(action==="exact:custom"){if(!fileId)throw new Error("Please send a photo first");await telegram("sendMessage",token,{chat_id:chatId,text:"✏️ Enter exact dimensions.\n\nExamples: 512x512, 512x1900, 1080x1920\nYou can use x, × or х between numbers.\n\nMinimum: 50 px · Maximum: 10000 px",reply_parameters:{message_id:query.message.message_id},reply_markup:{force_reply:true,input_field_placeholder:"512x1900"}});}
       else if(action==="compress")await showMenu(token,chatId,query.message,COMPRESS_MENU,"🗜️ Choose compression quality:");
