@@ -20,6 +20,7 @@ async function ensureCoreTables(db) {
     await db.prepare(`CREATE TABLE IF NOT EXISTS admin_sessions (telegram_id TEXT PRIMARY KEY, target_telegram_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
     await db.prepare(`CREATE TABLE IF NOT EXISTS ai_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
     await db.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+    await db.prepare(`CREATE TABLE IF NOT EXISTS exact_size_preferences (telegram_id TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'pad', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage(telegram_id, created_at)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_ai_usage_user_created ON ai_usage(telegram_id, created_at)`).run();
   })().catch(error => {
@@ -82,6 +83,21 @@ export async function consumeAiOperation(env, chatId, action) {
   if (used >= limit) return { allowed: false, used, remaining: 0, limit, premium, admin: false };
   await env.DB.prepare("INSERT INTO ai_usage (telegram_id, action, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)").bind(id, String(action || "ai")).run();
   return { allowed: true, used: used + 1, remaining: limit - used - 1, limit, premium, admin: false };
+}
+
+export async function getExactSizeMode(env, chatId) {
+  if (!env.DB || !chatId) return "pad";
+  await ensureCoreTables(env.DB);
+  const row = await env.DB.prepare("SELECT mode FROM exact_size_preferences WHERE telegram_id=?").bind(String(chatId)).first();
+  return row?.mode === "crop" ? "crop" : "pad";
+}
+
+export async function setExactSizeMode(env, chatId, mode) {
+  if (!env.DB || !chatId) return "pad";
+  const safeMode = mode === "crop" ? "crop" : "pad";
+  await ensureCoreTables(env.DB);
+  await env.DB.prepare("INSERT INTO exact_size_preferences (telegram_id,mode,updated_at) VALUES (?,?,CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET mode=excluded.mode,updated_at=CURRENT_TIMESTAMP").bind(String(chatId), safeMode).run();
+  return safeMode;
 }
 
 export async function consumePhoto(env, chatId, fileId, user = {}) {
