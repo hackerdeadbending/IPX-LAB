@@ -84,7 +84,12 @@ export async function consumeAiOperation(env, chatId, action) {
   return { allowed: true, used: used + 1, remaining: limit - used - 1, limit, premium, admin: false };
 }
 
-export async function consumePhoto(env, chatId, fileId, user = {}) { return { allowed: true, skipped: true }; }
+export async function consumePhoto(env, chatId, fileId, user = {}) {
+  if (!env.DB || !chatId || !fileId) return { allowed: true, skipped: true };
+  await ensureCoreTables(env.DB);
+  await env.DB.prepare("INSERT OR IGNORE INTO daily_photos (telegram_id, photo_date, file_id) VALUES (?, ?, ?)").bind(String(chatId), utcDate(), String(fileId)).run();
+  return { allowed: true, skipped: false };
+}
 export async function findUserByIdentifier(env, identifier) { if (!env.DB) return null; await ensureCoreTables(env.DB); const value = String(identifier || "").trim(); if (/^\d{5,15}$/.test(value)) return getUser(env.DB, value); const username = value.replace(/^@/, "").toLowerCase(); if (!username) return null; return env.DB.prepare("SELECT telegram_id, username, first_name, language, plan, premium_until FROM users WHERE LOWER(username)=?").bind(username).first(); }
 export async function setAdminTarget(env, adminChatId, targetTelegramId) { if (!env.DB) return; await ensureCoreTables(env.DB); await env.DB.prepare("INSERT INTO admin_sessions (telegram_id,target_telegram_id) VALUES (?,?) ON CONFLICT(telegram_id) DO UPDATE SET target_telegram_id=excluded.target_telegram_id, created_at=CURRENT_TIMESTAMP").bind(String(adminChatId), String(targetTelegramId)).run(); }
 export async function getAdminTarget(env, adminChatId) { if (!env.DB) return null; await ensureCoreTables(env.DB); const row = await env.DB.prepare("SELECT target_telegram_id FROM admin_sessions WHERE telegram_id=?").bind(String(adminChatId)).first(); return row?.target_telegram_id || null; }
