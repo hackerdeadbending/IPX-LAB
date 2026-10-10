@@ -16,7 +16,7 @@ async function telegram(method,token,body){
   return data.result;
 }
 function textResponse(text,status=200){return new Response(text,{status,headers:{"content-type":"text/plain; charset=utf-8"}});}
-function isImageDocument(document){if(!document)return false;const mime=String(document.mime_type||"").toLowerCase();if(mime.startsWith("image/"))return true;const name=String(document.file_name||"").toLowerCase();return /\\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(name);}
+function isImageDocument(document){if(!document)return false;const mime=String(document.mime_type||"").toLowerCase();if(mime.startsWith("image/"))return true;const name=String(document.file_name||"").toLowerCase();return /\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(name);}
 function getSourceFileId(message){if(message?.photo?.length)return message.photo[message.photo.length-1].file_id;if(isImageDocument(message?.document))return message.document.file_id;return null;}
 async function ensureSourceTable(env){if(!env.DB)return;await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY,file_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();}
 async function rememberSource(env,chatId,fileId){if(!env.DB||!chatId||!fileId)return;await ensureSourceTable(env);await env.DB.prepare(`INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP`).bind(String(chatId),fileId).run();}
