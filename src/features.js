@@ -1,5 +1,5 @@
 import currentWorker from "./entry.js";
-import { consumePhoto, registerUser, grantPremium, revokePremium, findUserByIdentifier, getAdminStats, getAdminTarget, setAdminTarget, clearAdminTarget, isAdmin } from "./db.js";
+import { consumePhoto, consumeAiOperation, registerUser, grantPremium, revokePremium, findUserByIdentifier, getAdminStats, getAdminTarget, setAdminTarget, clearAdminTarget, isAdmin } from "./db.js";
 
 const FILTERS = {
   "filter:cinema": { name: "Cinema", transform: { saturation: 0.82, contrast: 1.18, brightness: 0.96, gamma: 1.04, sharpen: 1 }, filename: "ipx-lab-cinema.jpg" },
@@ -53,7 +53,7 @@ async function applyFilter(env, token, chatId, action) {
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], preset.filename, {type:"image/jpeg"}));
   form.append("caption", `🎬 ${preset.name}\n\nFilter applied. You can continue editing this result.`);
-  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ]] }));
+  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ],[ {text:"✂️ Remove Background",callback_data:"ai:remove-bg"} ]] }));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token,"sendDocument"), {method:"POST", body:form});
   const data = await sent.json();
@@ -61,6 +61,45 @@ async function applyFilter(env, token, chatId, action) {
   const newId = data.result?.document?.file_id;
   if (newId && env.DB) await env.DB.prepare("INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP").bind(String(chatId),newId).run();
   return true;
+}
+async function removeBackground(env, token, chatId, languageCode) {
+  const ru = /^(ru|uk|be)/i.test(String(languageCode || ""));
+  const say = (en, rutext) => (ru ? rutext : en);
+  const fileId = await source(env, chatId);
+  if (!fileId) { await tg(token, "sendMessage", { chat_id: chatId, text: say("📸 Send a photo first.", "📸 Сначала отправьте фото.") }); return; }
+  if (!env.IMAGES) throw new Error("Cloudflare Images binding is not configured");
+  const usage = await consumeAiOperation(env, chatId, "remove-bg");
+  if (!usage.allowed) {
+    await tg(token, "sendMessage", {
+      chat_id: chatId,
+      text: usage.premium
+        ? say("🔒 You have reached the Premium AI limit of 3000 operations today.", "🔒 Вы достигли лимита Premium AI: 3000 операций сегодня.")
+        : say("🔒 You have used your 5 free AI operations in the last 7 days. Premium gives up to 3000 AI operations per day.", "🔒 Вы использовали 5 бесплатных AI-операций за последние 7 дней. Premium — до 3000 AI-операций в день."),
+      reply_markup: { inline_keyboard: [[{ text: "⭐ Buy Premium", callback_data: "premium" }]] }
+    });
+    return;
+  }
+  await tg(token, "sendMessage", { chat_id: chatId, text: say("✂️ Removing the background…", "✂️ Удаляю фон…") });
+  const file = await tg(token, "getFile", { file_id: fileId });
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+  if (!response.ok || !response.body) throw new Error(say("Unable to download current photo", "Не удалось скачать фото"));
+  const output = await env.IMAGES.input(response.body)
+    .transform({ width: 2048, height: 2048, fit: "scale-down" })
+    .transform({ segment: "foreground" })
+    .output({ format: "image/png" });
+  const result = output.response();
+  if (!result.ok) throw new Error(say(`Background removal failed (${result.status})`, `Не удалось удалить фон (${result.status})`));
+  const bytes = await result.arrayBuffer();
+  if (bytes.byteLength < 1000) throw new Error(say("Background removal returned an empty image", "Удаление фона вернуло пустое изображение"));
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("document", new File([bytes], "ipx-lab-no-background.png", { type: "image/png" }));
+  form.append("caption", say("✂️ Background removed\n\nTransparent PNG. Your original photo is still selected for other tools.", "✂️ Фон удалён\n\nПрозрачный PNG. Исходное фото осталось выбранным для других инструментов."));
+  form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "🎬 Filters", callback_data: "filters" }, { text: "⭐ Buy Premium", callback_data: "premium" }], [{ text: "✂️ Remove Background", callback_data: "ai:remove-bg" }]] }));
+  form.append("disable_content_type_detection", "true");
+  const sent = await fetch(telegramUrl(token, "sendDocument"), { method: "POST", body: form });
+  const data = await sent.json();
+  if (!data.ok) throw new Error(data.description || "Unable to send result");
 }
 async function adminPanel(env, token, chatId) {
   if (!isAdmin(chatId, env)) return false;
@@ -86,6 +125,7 @@ function addPremiumAndFilters(markup, chatId, env) {
   const hasFilters = rows.some(row => row.some(b => b.callback_data === "filters"));
   const hasPremium = rows.some(row => row.some(b => b.callback_data === "premium"));
   if (!hasFilters || !hasPremium) rows.push([{text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"}]);
+  if (!rows.some(row => row.some(b => b.callback_data === "ai:remove-bg"))) rows.push([{text:"✂️ Remove Background",callback_data:"ai:remove-bg"}]);
   if (isAdmin(chatId, env) && !rows.some(row => row.some(b => b.callback_data === "admin"))) rows.push([{text:"👑 Admin",callback_data:"admin"}]);
   return {inline_keyboard:rows};
 }
@@ -168,6 +208,12 @@ export default {
     }
     if (update?.callback_query) {
       const action = update.callback_query.data || "";
+      if (action === "ai:remove-bg") {
+        const cbId = update.callback_query.id; const lang = update.callback_query.from?.language_code;
+        try { await tg(token,"answerCallbackQuery",{callback_query_id:cbId}); } catch {}
+        ctx.waitUntil((async () => { try { await removeBackground(env,token,chatId,lang); } catch(e) { console.error("IPX LAB remove-bg error", e); try { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } catch {} } })());
+        return new Response("OK");
+      }
       if (action === "filters") { await showFilters(token,chatId); return new Response("OK"); }
       if (FILTERS[action]) { try { await applyFilter(env,token,chatId,action); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } return new Response("OK"); }
       if (action === "premium") { await sendPremium(token,chatId,250); return new Response("OK"); }
