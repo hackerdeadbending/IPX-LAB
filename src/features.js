@@ -170,7 +170,7 @@ export default {
     if (payment && token) {
       const userId = update.message.from?.id || update.message.chat?.id;
       const until = await grantPremium(env,userId,30,payment.total_amount,payment.telegram_payment_charge_id);
-      await tg(token,"sendMessage",{chat_id:userId,text:`👑 Premium activated!\n\nYou now have up to 3000 image operations per day.\nPremium is active until ${until.slice(0,10)}.`});
+      await tg(token,"sendMessage",{chat_id:userId,text:`👑 Premium activated!\n\nYou now have up to 3000 image operations per day.\nPremium is active until ${until ? until.slice(0,10) : "no expiration"}.`});
       return new Response("OK");
     }
     if (update?.message?.text) {
