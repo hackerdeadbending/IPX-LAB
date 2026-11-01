@@ -113,6 +113,7 @@ export async function clearAdminTarget(env, adminChatId) { if (!env.DB) return; 
 
 export async function grantPremium(env, chatId, days = 30, starsAmount = 0, chargeId = null) {
   if (!env.DB) return null; await ensureUser(env.DB, chatId); const id = String(chatId); const current = await getUser(env.DB, id); let until = null;
+  if (chargeId && chargeId !== "admin-grant") { const duplicate = await env.DB.prepare("SELECT 1 AS found FROM subscriptions WHERE telegram_charge_id=? LIMIT 1").bind(String(chargeId)).first(); if (duplicate) return current?.premium_until || null; }
   if (days !== null && days !== Infinity && Number(days) > 0) { const now = Date.now(); const currentUntil = current?.premium_until ? new Date(current.premium_until).getTime() : 0; const base = Math.max(now, Number.isFinite(currentUntil) ? currentUntil : 0); until = new Date(base + Number(days) * 86400000).toISOString(); }
   await env.DB.prepare("UPDATE users SET plan='premium', premium_until=?, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?").bind(until, id).run();
   await env.DB.prepare("INSERT INTO subscriptions (telegram_id, plan, status, stars_amount, expires_at, telegram_charge_id) VALUES (?, 'premium', 'active', ?, ?, ?)").bind(id, starsAmount, until, chargeId).run(); return until;
