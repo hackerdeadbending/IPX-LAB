@@ -1,4 +1,5 @@
 import currentWorker from "./entry.js";
+import { prepareImage } from "./orientation.js";
 import { consumePhoto, consumeAiOperation, registerUser, grantPremium, revokePremium, findUserByIdentifier, getAdminStats, getAdminTarget, setAdminTarget, clearAdminTarget, isAdmin } from "./db.js";
 
 const FILTERS = {
@@ -32,28 +33,31 @@ async function source(env, chatId) {
   return row?.file_id || null;
 }
 async function sendPremium(token, chatId, amount) {
-  return tg(token, "sendInvoice", { chat_id: chatId, title: "IPX LAB Premium", description: "3000 image operations per day plus Premium features. 250 Stars / 30 days.", payload: `ipx-premium-30d-${chatId}-${Date.now()}`, currency: "XTR", prices: [{ label: "Premium — 250 Stars / 30 days", amount }], subscription_period: 2592000 });
+  return tg(token, "sendInvoice", { chat_id: chatId, title: "IPX LAB Premium", description: "3000 image operations per day plus Premium features. 250 Stars / 30 days.", payload: `ipx-premium-30d-${chatId}-${Date.now()}`, currency: "XTR", prices: [{ label: "Premium â 250 Stars / 30 days", amount }], subscription_period: 2592000 });
 }
 async function showFilters(token, chatId) {
-  await tg(token, "sendMessage", { chat_id: chatId, text: "🎬 Filters\n\nGive your photo a cinematic, film or professional look.", reply_markup: { inline_keyboard: [[{text:"🎬 Cinema",callback_data:"filter:cinema"},{text:"🌑 Dark Cinema",callback_data:"filter:dark-cinema"}],[{text:"🌅 Golden Hour",callback_data:"filter:golden"},{text:"🌃 Night Film",callback_data:"filter:night"}],[{text:"🟠 Warm Film",callback_data:"filter:warm"},{text:"🔵 Cold Film",callback_data:"filter:cold"}],[{text:"🎞 35mm",callback_data:"filter:35mm"},{text:"📽 Vintage Film",callback_data:"filter:vintage"}],[{text:"🖤 Noir",callback_data:"filter:noir"},{text:"🌫 Moody",callback_data:"filter:moody"}],[{text:"⚫ Black & White",callback_data:"filter:bw"},{text:"🎭 Dramatic B&W",callback_data:"filter:dramatic-bw"}],[{text:"↩️ Back",callback_data:"back"}]] } });
+  await tg(token, "sendMessage", { chat_id: chatId, text: "ð¬ Filters\n\nGive your photo a cinematic, film or professional look.", reply_markup: { inline_keyboard: [[{text:"ð¬ Cinema",callback_data:"filter:cinema"},{text:"ð Dark Cinema",callback_data:"filter:dark-cinema"}],[{text:"ð Golden Hour",callback_data:"filter:golden"},{text:"ð Night Film",callback_data:"filter:night"}],[{text:"ð  Warm Film",callback_data:"filter:warm"},{text:"ðµ Cold Film",callback_data:"filter:cold"}],[{text:"ð 35mm",callback_data:"filter:35mm"},{text:"ð½ Vintage Film",callback_data:"filter:vintage"}],[{text:"ð¤ Noir",callback_data:"filter:noir"},{text:"ð« Moody",callback_data:"filter:moody"}],[{text:"â« Black & White",callback_data:"filter:bw"},{text:"ð­ Dramatic B&W",callback_data:"filter:dramatic-bw"}],[{text:"â©ï¸ Back",callback_data:"back"}]] } });
 }
 async function applyFilter(env, token, chatId, action) {
   const preset = FILTERS[action];
   if (!preset) return false;
   const fileId = await source(env, chatId);
-  if (!fileId) { await tg(token, "sendMessage", {chat_id: chatId, text: "📸 Send a photo first."}); return true; }
+  if (!fileId) { await tg(token, "sendMessage", {chat_id: chatId, text: "ð¸ Send a photo first."}); return true; }
   const file = await tg(token, "getFile", {file_id: fileId});
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
   if (!response.ok || !response.body) throw new Error("Unable to download current photo");
-  const output = await env.IMAGES.input(response.body).transform({fit:"scale-down", ...preset.transform}).output({format:"image/jpeg", quality:92});
+  const prepared = await prepareImage(response);
+  let handle = env.IMAGES.input(prepared.stream);
+  if (prepared.rotation) handle = handle.transform(prepared.rotation);
+  const output = await handle.transform({fit:"scale-down", ...preset.transform}).output({format:"image/jpeg", quality:92});
   const result = output.response();
   if (!result.ok) throw new Error(`Filter failed (${result.status})`);
   const bytes = await result.arrayBuffer();
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], preset.filename, {type:"image/jpeg"}));
-  form.append("caption", `🎬 ${preset.name}\n\nFilter applied. You can continue editing this result.`);
-  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ],[ {text:"✂️ Remove Background",callback_data:"ai:remove-bg"} ]] }));
+  form.append("caption", `ð¬ ${preset.name}\n\nFilter applied. You can continue editing this result.`);
+  form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"ð¬ Filters",callback_data:"filters"},{text:"â­ Buy Premium",callback_data:"premium"} ],[ {text:"âï¸ Remove Background",callback_data:"ai:remove-bg"} ]] }));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token,"sendDocument"), {method:"POST", body:form});
   const data = await sent.json();
@@ -66,36 +70,39 @@ async function removeBackground(env, token, chatId, languageCode) {
   const ru = /^(ru|uk|be)/i.test(String(languageCode || ""));
   const say = (en, rutext) => (ru ? rutext : en);
   const fileId = await source(env, chatId);
-  if (!fileId) { await tg(token, "sendMessage", { chat_id: chatId, text: say("📸 Send a photo first.", "📸 Сначала отправьте фото.") }); return; }
+  if (!fileId) { await tg(token, "sendMessage", { chat_id: chatId, text: say("ð¸ Send a photo first.", "ð¸ Ð¡Ð½Ð°ÑÐ°Ð»Ð° Ð¾ÑÐ¿ÑÐ°Ð²ÑÑÐµ ÑÐ¾ÑÐ¾.") }); return; }
   if (!env.IMAGES) throw new Error("Cloudflare Images binding is not configured");
   const usage = await consumeAiOperation(env, chatId, "remove-bg");
   if (!usage.allowed) {
     await tg(token, "sendMessage", {
       chat_id: chatId,
       text: usage.premium
-        ? say("🔒 You have reached the Premium AI limit of 3000 operations today.", "🔒 Вы достигли лимита Premium AI: 3000 операций сегодня.")
-        : say("🔒 You have used your 5 free AI operations in the last 7 days. Premium gives up to 3000 AI operations per day.", "🔒 Вы использовали 5 бесплатных AI-операций за последние 7 дней. Premium — до 3000 AI-операций в день."),
-      reply_markup: { inline_keyboard: [[{ text: "⭐ Buy Premium", callback_data: "premium" }]] }
+        ? say("ð You have reached the Premium AI limit of 3000 operations today.", "ð ÐÑ Ð´Ð¾ÑÑÐ¸Ð³Ð»Ð¸ Ð»Ð¸Ð¼Ð¸ÑÐ° Premium AI: 3000 Ð¾Ð¿ÐµÑÐ°ÑÐ¸Ð¹ ÑÐµÐ³Ð¾Ð´Ð½Ñ.")
+        : say("ð You have used your 5 free AI operations in the last 7 days. Premium gives up to 3000 AI operations per day.", "ð ÐÑ Ð¸ÑÐ¿Ð¾Ð»ÑÐ·Ð¾Ð²Ð°Ð»Ð¸ 5 Ð±ÐµÑÐ¿Ð»Ð°ÑÐ½ÑÑ AI-Ð¾Ð¿ÐµÑÐ°ÑÐ¸Ð¹ Ð·Ð° Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ 7 Ð´Ð½ÐµÐ¹. Premium â Ð´Ð¾ 3000 AI-Ð¾Ð¿ÐµÑÐ°ÑÐ¸Ð¹ Ð² Ð´ÐµÐ½Ñ."),
+      reply_markup: { inline_keyboard: [[{ text: "â­ Buy Premium", callback_data: "premium" }]] }
     });
     return;
   }
-  await tg(token, "sendMessage", { chat_id: chatId, text: say("✂️ Removing the background…", "✂️ Удаляю фон…") });
+  await tg(token, "sendMessage", { chat_id: chatId, text: say("âï¸ Removing the backgroundâ¦", "âï¸ Ð£Ð´Ð°Ð»ÑÑ ÑÐ¾Ð½â¦") });
   const file = await tg(token, "getFile", { file_id: fileId });
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
-  if (!response.ok || !response.body) throw new Error(say("Unable to download current photo", "Не удалось скачать фото"));
-  const output = await env.IMAGES.input(response.body)
+  if (!response.ok || !response.body) throw new Error(say("Unable to download current photo", "ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ ÑÐºÐ°ÑÐ°ÑÑ ÑÐ¾ÑÐ¾"));
+  const prepared = await prepareImage(response);
+  let handle = env.IMAGES.input(prepared.stream);
+  if (prepared.rotation) handle = handle.transform(prepared.rotation);
+  const output = await handle
     .transform({ width: 2048, height: 2048, fit: "scale-down" })
     .transform({ segment: "foreground" })
     .output({ format: "image/png" });
   const result = output.response();
-  if (!result.ok) throw new Error(say(`Background removal failed (${result.status})`, `Не удалось удалить фон (${result.status})`));
+  if (!result.ok) throw new Error(say(`Background removal failed (${result.status})`, `ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ ÑÐ´Ð°Ð»Ð¸ÑÑ ÑÐ¾Ð½ (${result.status})`));
   const bytes = await result.arrayBuffer();
-  if (bytes.byteLength < 1000) throw new Error(say("Background removal returned an empty image", "Удаление фона вернуло пустое изображение"));
+  if (bytes.byteLength < 1000) throw new Error(say("Background removal returned an empty image", "Ð£Ð´Ð°Ð»ÐµÐ½Ð¸Ðµ ÑÐ¾Ð½Ð° Ð²ÐµÑÐ½ÑÐ»Ð¾ Ð¿ÑÑÑÐ¾Ðµ Ð¸Ð·Ð¾Ð±ÑÐ°Ð¶ÐµÐ½Ð¸Ðµ"));
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], "ipx-lab-no-background.png", { type: "image/png" }));
-  form.append("caption", say("✂️ Background removed\n\nTransparent PNG. Your original photo is still selected for other tools.", "✂️ Фон удалён\n\nПрозрачный PNG. Исходное фото осталось выбранным для других инструментов."));
-  form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "🎬 Filters", callback_data: "filters" }, { text: "⭐ Buy Premium", callback_data: "premium" }], [{ text: "✂️ Remove Background", callback_data: "ai:remove-bg" }]] }));
+  form.append("caption", say("âï¸ Background removed\n\nTransparent PNG. Your original photo is still selected for other tools.", "âï¸ Ð¤Ð¾Ð½ ÑÐ´Ð°Ð»ÑÐ½\n\nÐÑÐ¾Ð·ÑÐ°ÑÐ½ÑÐ¹ PNG. ÐÑÑÐ¾Ð´Ð½Ð¾Ðµ ÑÐ¾ÑÐ¾ Ð¾ÑÑÐ°Ð»Ð¾ÑÑ Ð²ÑÐ±ÑÐ°Ð½Ð½ÑÐ¼ Ð´Ð»Ñ Ð´ÑÑÐ³Ð¸Ñ Ð¸Ð½ÑÑÑÑÐ¼ÐµÐ½ÑÐ¾Ð²."));
+  form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "ð¬ Filters", callback_data: "filters" }, { text: "â­ Buy Premium", callback_data: "premium" }], [{ text: "âï¸ Remove Background", callback_data: "ai:remove-bg" }]] }));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token, "sendDocument"), { method: "POST", body: form });
   const data = await sent.json();
@@ -104,29 +111,29 @@ async function removeBackground(env, token, chatId, languageCode) {
 async function adminPanel(env, token, chatId) {
   if (!isAdmin(chatId, env)) return false;
   const stats = await getAdminStats(env);
-  const lines = [`👑 IPX LAB ADMIN`, ``, `👥 Users: ${stats?.users ?? 0}`, `⭐ Premium: ${stats?.premium ?? 0}`, `📸 Photos today: ${stats?.todayPhotos ?? 0}`, `⚙️ Operations today: ${stats?.todayOperations ?? 0}`, ``, `Recent users:`];
-  for (const u of (stats?.recent || [])) lines.push(`• ${u.first_name || "No name"}${u.username ? ` @${u.username}` : ""} — ${u.plan}${u.premium_until ? ` until ${u.premium_until.slice(0,10)}` : ""} — ID ${u.telegram_id}`);
-  await tg(token,"sendMessage",{chat_id:chatId,text:lines.join("\n"),reply_markup:{inline_keyboard:[[ {text:"⭐ Grant Premium",callback_data:"admin:grant"},{text:"❌ Revoke Premium",callback_data:"admin:revoke"} ]]}});
+  const lines = [`ð IPX LAB ADMIN`, ``, `ð¥ Users: ${stats?.users ?? 0}`, `â­ Premium: ${stats?.premium ?? 0}`, `ð¸ Photos today: ${stats?.todayPhotos ?? 0}`, `âï¸ Operations today: ${stats?.todayOperations ?? 0}`, ``, `Recent users:`];
+  for (const u of (stats?.recent || [])) lines.push(`â¢ ${u.first_name || "No name"}${u.username ? ` @${u.username}` : ""} â ${u.plan}${u.premium_until ? ` until ${u.premium_until.slice(0,10)}` : ""} â ID ${u.telegram_id}`);
+  await tg(token,"sendMessage",{chat_id:chatId,text:lines.join("\n"),reply_markup:{inline_keyboard:[[ {text:"â­ Grant Premium",callback_data:"admin:grant"},{text:"â Revoke Premium",callback_data:"admin:revoke"} ]]}});
   return true;
 }
 async function grantPrompt(env, token, chatId, revoke = false) {
   await setAdminTarget(env, chatId, revoke ? "__revoke__" : "__grant__");
-  await tg(token,"sendMessage",{chat_id:chatId,text:revoke ? "❌ Send the user's Telegram ID or @username to remove Premium." : "👑 Send the user's Telegram ID or @username.\n\nExample: 123456789 or @username",reply_markup:{force_reply:true,input_field_placeholder:"ID or @username"}});
+  await tg(token,"sendMessage",{chat_id:chatId,text:revoke ? "â Send the user's Telegram ID or @username to remove Premium." : "ð Send the user's Telegram ID or @username.\n\nExample: 123456789 or @username",reply_markup:{force_reply:true,input_field_placeholder:"ID or @username"}});
 }
 async function durationMenu(token, chatId) {
-  await tg(token,"sendMessage",{chat_id:chatId,text:"⏱ Choose Premium duration:",reply_markup:{inline_keyboard:[[ {text:"7 days",callback_data:"admin:days:7"},{text:"30 days",callback_data:"admin:days:30"} ],[ {text:"90 days",callback_data:"admin:days:90"},{text:"365 days",callback_data:"admin:days:365"} ],[ {text:"♾️ Never expires",callback_data:"admin:days:infinite"} ],[ {text:"✏️ Custom days",callback_data:"admin:days:custom"} ],[ {text:"↩️ Cancel",callback_data:"admin:cancel"} ]]}});
+  await tg(token,"sendMessage",{chat_id:chatId,text:"â± Choose Premium duration:",reply_markup:{inline_keyboard:[[ {text:"7 days",callback_data:"admin:days:7"},{text:"30 days",callback_data:"admin:days:30"} ],[ {text:"90 days",callback_data:"admin:days:90"},{text:"365 days",callback_data:"admin:days:365"} ],[ {text:"â¾ï¸ Never expires",callback_data:"admin:days:infinite"} ],[ {text:"âï¸ Custom days",callback_data:"admin:days:custom"} ],[ {text:"â©ï¸ Cancel",callback_data:"admin:cancel"} ]]}});
 }
 async function customDaysPrompt(token, chatId) {
-  await tg(token,"sendMessage",{chat_id:chatId,text:"✏️ Enter the number of days (1–3650).",reply_markup:{force_reply:true,input_field_placeholder:"Number of days"}});
+  await tg(token,"sendMessage",{chat_id:chatId,text:"âï¸ Enter the number of days (1â3650).",reply_markup:{force_reply:true,input_field_placeholder:"Number of days"}});
 }
 function addPremiumAndFilters(markup, chatId, env) {
   if (!markup?.inline_keyboard) return markup;
   const rows = markup.inline_keyboard.map(r => [...r]);
   const hasFilters = rows.some(row => row.some(b => b.callback_data === "filters"));
   const hasPremium = rows.some(row => row.some(b => b.callback_data === "premium"));
-  if (!hasFilters || !hasPremium) rows.push([{text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"}]);
-  if (!rows.some(row => row.some(b => b.callback_data === "ai:remove-bg"))) rows.push([{text:"✂️ Remove Background",callback_data:"ai:remove-bg"}]);
-  if (isAdmin(chatId, env) && !rows.some(row => row.some(b => b.callback_data === "admin"))) rows.push([{text:"👑 Admin",callback_data:"admin"}]);
+  if (!hasFilters || !hasPremium) rows.push([{text:"ð¬ Filters",callback_data:"filters"},{text:"â­ Buy Premium",callback_data:"premium"}]);
+  if (!rows.some(row => row.some(b => b.callback_data === "ai:remove-bg"))) rows.push([{text:"âï¸ Remove Background",callback_data:"ai:remove-bg"}]);
+  if (isAdmin(chatId, env) && !rows.some(row => row.some(b => b.callback_data === "admin"))) rows.push([{text:"ð Admin",callback_data:"admin"}]);
   return {inline_keyboard:rows};
 }
 async function interceptOutgoing(input, init, originalFetch, env) {
@@ -170,22 +177,22 @@ export default {
     if (payment && token) {
       const userId = update.message.from?.id || update.message.chat?.id;
       const until = await grantPremium(env,userId,30,payment.total_amount,payment.telegram_payment_charge_id);
-      await tg(token,"sendMessage",{chat_id:userId,text:`👑 Premium activated!\n\nYou now have up to 3000 image operations per day.\nPremium is active until ${until ? until.slice(0,10) : "no expiration"}.`});
+      await tg(token,"sendMessage",{chat_id:userId,text:`ð Premium activated!\n\nYou now have up to 3000 image operations per day.\nPremium is active until ${until ? until.slice(0,10) : "no expiration"}.`});
       return new Response("OK");
     }
     if (update?.message?.text) {
       const text = update.message.text.trim();
-      if (text === "/premium" || text === "⭐ Premium" || text === "⭐ Buy Premium") { if (token) await sendPremium(token, chatId, 250); return new Response("OK"); }
+      if (text === "/premium" || text === "â­ Premium" || text === "â­ Buy Premium") { if (token) await sendPremium(token, chatId, 250); return new Response("OK"); }
       if (text === "/admin") { if (token && await adminPanel(env,token,chatId)) return new Response("OK"); }
       if (update.message.reply_to_message && isAdmin(chatId,env)) {
         const target = await getAdminTarget(env, chatId);
         if (target === "__grant__" || target === "__revoke__") {
           const user = await findUserByIdentifier(env, text);
-          if (!user) { await tg(token,"sendMessage",{chat_id:chatId,text:"❌ User not found in IPX LAB. The user must have started the bot first."}); return new Response("OK"); }
+          if (!user) { await tg(token,"sendMessage",{chat_id:chatId,text:"â User not found in IPX LAB. The user must have started the bot first."}); return new Response("OK"); }
           if (target === "__revoke__") {
             const revoked = await revokePremium(env, user.telegram_id);
             await clearAdminTarget(env,chatId);
-            await tg(token,"sendMessage",{chat_id:chatId,text:revoked ? `❌ Premium removed from ${user.telegram_id}.` : `ℹ️ ${user.telegram_id} does not have active Premium.`});
+            await tg(token,"sendMessage",{chat_id:chatId,text:revoked ? `â Premium removed from ${user.telegram_id}.` : `â¹ï¸ ${user.telegram_id} does not have active Premium.`});
             return new Response("OK");
           }
           await setAdminTarget(env, chatId, user.telegram_id);
@@ -198,11 +205,11 @@ export default {
             if (days >= 1 && days <= 3650) {
               const until = await grantPremium(env,target,days,0,"admin-grant");
               await clearAdminTarget(env,chatId);
-              await tg(token,"sendMessage",{chat_id:chatId,text:`✅ Premium granted to ${target} for ${days} days.\nExpires: ${until.slice(0,10)}`});
+              await tg(token,"sendMessage",{chat_id:chatId,text:`â Premium granted to ${target} for ${days} days.\nExpires: ${until.slice(0,10)}`});
               return new Response("OK");
             }
           }
-          if (/^(?:cancel|отмена)$/i.test(text)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"↩️ Cancelled."}); return new Response("OK"); }
+          if (/^(?:cancel|Ð¾ÑÐ¼ÐµÐ½Ð°)$/i.test(text)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"â©ï¸ Cancelled."}); return new Response("OK"); }
         }
       }
     }
@@ -211,24 +218,24 @@ export default {
       if (action === "ai:remove-bg") {
         const cbId = update.callback_query.id; const lang = update.callback_query.from?.language_code;
         try { await tg(token,"answerCallbackQuery",{callback_query_id:cbId}); } catch {}
-        ctx.waitUntil((async () => { try { await removeBackground(env,token,chatId,lang); } catch(e) { console.error("IPX LAB remove-bg error", e); try { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } catch {} } })());
+        ctx.waitUntil((async () => { try { await removeBackground(env,token,chatId,lang); } catch(e) { console.error("IPX LAB remove-bg error", e); try { await tg(token,"sendMessage",{chat_id:chatId,text:`â ${e.message}`}); } catch {} } })());
         return new Response("OK");
       }
       if (action === "filters") { await showFilters(token,chatId); return new Response("OK"); }
-      if (FILTERS[action]) { try { await applyFilter(env,token,chatId,action); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`❌ ${e.message}`}); } return new Response("OK"); }
+      if (FILTERS[action]) { try { await applyFilter(env,token,chatId,action); } catch(e) { await tg(token,"sendMessage",{chat_id:chatId,text:`â ${e.message}`}); } return new Response("OK"); }
       if (action === "premium") { await sendPremium(token,chatId,250); return new Response("OK"); }
       if (action === "admin") { await adminPanel(env,token,chatId); return new Response("OK"); }
       if (action === "admin:grant" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await grantPrompt(env,token,chatId,false); return new Response("OK"); }
       if (action === "admin:revoke" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await grantPrompt(env,token,chatId,true); return new Response("OK"); }
-      if (action === "admin:cancel" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"↩️ Cancelled."}); return new Response("OK"); }
+      if (action === "admin:cancel" && isAdmin(chatId,env)) { await clearAdminTarget(env,chatId); await tg(token,"sendMessage",{chat_id:chatId,text:"â©ï¸ Cancelled."}); return new Response("OK"); }
       if (action.startsWith("admin:days:") && isAdmin(chatId,env)) {
         const target = await getAdminTarget(env,chatId);
-        if (!target || target === "__grant__" || target === "__revoke__") { await tg(token,"sendMessage",{chat_id:chatId,text:"❌ No target selected."}); return new Response("OK"); }
+        if (!target || target === "__grant__" || target === "__revoke__") { await tg(token,"sendMessage",{chat_id:chatId,text:"â No target selected."}); return new Response("OK"); }
         const choice = action.split(":").pop();
         if (choice === "custom") { await customDaysPrompt(token,chatId); return new Response("OK"); }
         const until = choice === "infinite" ? await grantPremium(env,target,null,0,"admin-grant") : await grantPremium(env,target,Number(choice),0,"admin-grant");
         await clearAdminTarget(env,chatId);
-        await tg(token,"sendMessage",{chat_id:chatId,text:choice === "infinite" ? `♾️ Premium granted to ${target} permanently.` : `✅ Premium granted to ${target} for ${choice} days.\nExpires: ${until.slice(0,10)}`});
+        await tg(token,"sendMessage",{chat_id:chatId,text:choice === "infinite" ? `â¾ï¸ Premium granted to ${target} permanently.` : `â Premium granted to ${target} for ${choice} days.\nExpires: ${until.slice(0,10)}`});
         return new Response("OK");
       }
     }
