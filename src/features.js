@@ -1,4 +1,5 @@
 import currentWorker from "./entry.js";
+import { prepareImage } from "./orientation.js";
 import { consumePhoto, consumeAiOperation, registerUser, grantPremium, revokePremium, findUserByIdentifier, getAdminStats, getAdminTarget, setAdminTarget, clearAdminTarget, isAdmin } from "./db.js";
 
 const FILTERS = {
@@ -45,7 +46,10 @@ async function applyFilter(env, token, chatId, action) {
   const file = await tg(token, "getFile", {file_id: fileId});
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
   if (!response.ok || !response.body) throw new Error("Unable to download current photo");
-  const output = await env.IMAGES.input(response.body).transform({fit:"scale-down", ...preset.transform}).output({format:"image/jpeg", quality:92});
+  const prepared = await prepareImage(response);
+  let handle = env.IMAGES.input(prepared.stream);
+  if (prepared.rotation) handle = handle.transform(prepared.rotation);
+  const output = await handle.transform({fit:"scale-down", ...preset.transform}).output({format:"image/jpeg", quality:92});
   const result = output.response();
   if (!result.ok) throw new Error(`Filter failed (${result.status})`);
   const bytes = await result.arrayBuffer();
@@ -83,7 +87,10 @@ async function removeBackground(env, token, chatId, languageCode) {
   const file = await tg(token, "getFile", { file_id: fileId });
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
   if (!response.ok || !response.body) throw new Error(say("Unable to download current photo", "Не удалось скачать фото"));
-  const output = await env.IMAGES.input(response.body)
+  const prepared = await prepareImage(response);
+  let handle = env.IMAGES.input(prepared.stream);
+  if (prepared.rotation) handle = handle.transform(prepared.rotation);
+  const output = await handle
     .transform({ width: 2048, height: 2048, fit: "scale-down" })
     .transform({ segment: "foreground" })
     .output({ format: "image/png" });
