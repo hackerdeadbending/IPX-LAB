@@ -19,7 +19,7 @@ async function telegram(method,token,body){
 }
 function textResponse(text,status=200){return new Response(text,{status,headers:{"content-type":"text/plain; charset=utf-8"}});}
 function isImageDocument(document){if(!document)return false;const mime=String(document.mime_type||"").toLowerCase();if(mime.startsWith("image/"))return true;const name=String(document.file_name||"").toLowerCase();return /\.(jpe?g|png|webp|gif|avif|heic|heif|bmp|tiff?)$/.test(name);}
-function getSourceFileId(message){if(message?.photo?.length)return message.photo[message.photo.length-1].file_id;if(isImageDocument(message?.document))return message.document.file_id;return null;}
+function getSourceFileId(message){if(message?.photo?.length)return message.photo[message.photo.length-1].file_id;if(isImageDocument(message?.document))return message.document.file_id;if(message?.sticker&&!message.sticker.is_animated&&!message.sticker.is_video)return message.sticker.file_id;return null;}
 async function ensureSourceTable(env){if(!env.DB)return;await env.DB.prepare(`CREATE TABLE IF NOT EXISTS source_images (telegram_id TEXT PRIMARY KEY,file_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();}
 async function rememberSource(env,chatId,fileId){if(!env.DB||!chatId||!fileId)return;await ensureSourceTable(env);await env.DB.prepare(`INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP`).bind(String(chatId),fileId).run();}
 async function getRememberedSource(env,chatId){if(!env.DB||!chatId)return null;await ensureSourceTable(env);const row=await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(String(chatId)).first();return row?.file_id||null;}
@@ -91,7 +91,7 @@ async function showMenu(token,chatId,message,replyMarkup,fallbackText){if(messag
 export default{async fetch(request,env){
   if(request.method!=="POST")return textResponse("IPX LAB Photo is online.");const token=env.TELEGRAM_BOT_TOKEN;if(!token)return textResponse("Missing TELEGRAM_BOT_TOKEN",500);let update;try{update=await request.json();}catch{return textResponse("Invalid JSON",400);}
   try{
-    if(update.message){const chatId=update.message.chat?.id;if(!chatId)return textResponse("OK");const fileId=getSourceFileId(update.message);if(fileId){await rememberSource(env,chatId,fileId);await sendPhotoMenu(token,chatId,fileId,Boolean(isImageDocument(update.message.document)));return textResponse("OK");}if(update.message.text){
+    if(update.message){const chatId=update.message.chat?.id;if(!chatId)return textResponse("OK");const fileId=getSourceFileId(update.message);if(fileId){await rememberSource(env,chatId,fileId);await sendPhotoMenu(token,chatId,fileId,Boolean(isImageDocument(update.message.document)||update.message.sticker));return textResponse("OK");}if(update.message.text){
       const exactCustom=String(update.message.text).match(/^exactcustom:(pad|crop):(\d{2,5}):(\d{2,5})$/);
       if(exactCustom){const [,mode,width,height]=exactCustom;const sourceId=await resolveSourceFileId(env,chatId,update.message.reply_to_message);await transformImage(env,token,chatId,sourceId,`exact:${mode}:${width}:${height}`);return textResponse("OK");}
       const handled=await handleCustomResize(env,token,chatId,update.message.text,update.message.reply_to_message);if(handled)return textResponse("OK");
