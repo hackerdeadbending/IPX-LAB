@@ -60,5 +60,5 @@ export function normalizeOrientation(input) {
 
 export async function prepareImage(response) {
   const { orientation, bytes } = normalizeOrientation(await response.arrayBuffer());
-  return { stream: new Response(bytes).body, rotation: ORIENTATION_OPS[orientation] || null, orientation };
+  return { stream: new Response(bytes).body, rotation: ORIENTATION_OPS[orientation] || null, orientation, bytes };
 }
