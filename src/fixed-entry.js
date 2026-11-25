@@ -15,7 +15,7 @@ async function prepareFilterSource(env, chatId, action) {
     } else if (FILTER_ACTIONS.has(action)) {
       const base = await env.DB.prepare("SELECT file_id FROM source_images WHERE telegram_id=?").bind(baseId).first();
       if (base?.file_id) await env.DB.prepare("UPDATE source_images SET file_id=?,updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?").bind(base.file_id, id).run();
-    } else if (MAIN_ACTIONS.has(action)) {
+    } else if (MAIN_ACTIONS.has(action) || action.startsWith("mp:") || action === "ai:remove-bg") {
       await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(baseId).run();
     }
   } catch (error) { console.error("IPX LAB filter source error", error); }
@@ -53,7 +53,11 @@ export default {
         if (chatId && isImage && env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run();
         if (chatId && callbackAction) await prepareFilterSource(env, chatId, callbackAction);
         const replyText = update?.message?.reply_to_message?.text || update?.message?.reply_to_message?.caption || "";
-        if (update?.message?.text && /Enter the maximum width|Enter exact dimensions/i.test(replyText)) return await baseWorker.fetch(request, env, ctx);
+        const isMpReply = /Enter target megapixels|Введите нужное количество мегапикселей/i.test(replyText);
+        if (update?.message?.text && (isMpReply || /Enter the maximum width|Enter exact dimensions/i.test(replyText))) {
+          if (isMpReply && chatId && env.DB) await env.DB.prepare("DELETE FROM source_images WHERE telegram_id=?").bind(`${chatId}:filter-base`).run();
+          return await baseWorker.fetch(request, env, ctx);
+        }
       } catch (error) { console.error("IPX LAB filter wrapper error", error); }
     }
     const originalFetch = globalThis.fetch;

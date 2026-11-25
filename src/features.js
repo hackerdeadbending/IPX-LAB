@@ -49,13 +49,14 @@ async function applyFilter(env, token, chatId, action) {
   const prepared = await prepareImage(response);
   let handle = env.IMAGES.input(prepared.stream);
   if (prepared.rotation) handle = handle.transform(prepared.rotation);
-  const output = await handle.transform({fit:"scale-down", ...preset.transform}).output({format:"image/jpeg", quality:92});
+  const isPng = /\.png$/i.test(String(file.file_path || ""));
+  const output = await handle.transform({fit:"scale-down", ...preset.transform}).output(isPng ? {format:"image/png"} : {format:"image/jpeg", quality:92});
   const result = output.response();
   if (!result.ok) throw new Error(`Filter failed (${result.status})`);
   const bytes = await result.arrayBuffer();
   const form = new FormData();
   form.append("chat_id", String(chatId));
-  form.append("document", new File([bytes], preset.filename, {type:"image/jpeg"}));
+  form.append("document", new File([bytes], isPng ? preset.filename.replace(/\.jpg$/, ".png") : preset.filename, {type: isPng ? "image/png" : "image/jpeg"}));
   form.append("caption", `🎬 ${preset.name}\n\nFilter applied. You can continue editing this result.`);
   form.append("reply_markup", JSON.stringify({inline_keyboard:[[ {text:"🎬 Filters",callback_data:"filters"},{text:"⭐ Buy Premium",callback_data:"premium"} ],[ {text:"✂️ Remove Background",callback_data:"ai:remove-bg"} ]] }));
   form.append("disable_content_type_detection", "true");
@@ -65,6 +66,18 @@ async function applyFilter(env, token, chatId, action) {
   const newId = data.result?.document?.file_id;
   if (newId && env.DB) await env.DB.prepare("INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP").bind(String(chatId),newId).run();
   return true;
+}
+function mainMenuMarkup(ru) {
+  const t = (en, ruText) => (ru ? ruText : en);
+  return { inline_keyboard: [
+    [{ text: t("📐 Megapixels", "📐 Изменить мегапиксели"), callback_data: "resize" }, { text: t("📏 Exact Size", "📏 Точный размер"), callback_data: "exact-size" }],
+    [{ text: t("🗜️ Compress", "🗜️ Сжать"), callback_data: "compress" }, { text: t("🔄 Convert", "🔄 Конвертировать"), callback_data: "convert" }],
+    [{ text: t("✂️ Crop", "✂️ Обрезать"), callback_data: "crop" }, { text: t("🛡️ Safe Share", "🛡️ Безопасный обмен"), callback_data: "safe-share" }],
+    [{ text: t("🧹 Remove Metadata", "🧹 Удалить метаданные"), callback_data: "metadata" }],
+    [{ text: t("ℹ️ Image Info", "ℹ️ Информация об изображении"), callback_data: "info" }],
+    [{ text: "🎬 Filters", callback_data: "filters" }, { text: "⭐ Buy Premium", callback_data: "premium" }],
+    [{ text: t("✂️ Remove Background", "✂️ Удалить фон"), callback_data: "ai:remove-bg" }]
+  ] };
 }
 async function removeBackground(env, token, chatId, languageCode) {
   const ru = /^(ru|uk|be)/i.test(String(languageCode || ""));
@@ -101,12 +114,14 @@ async function removeBackground(env, token, chatId, languageCode) {
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("document", new File([bytes], "ipx-lab-no-background.png", { type: "image/png" }));
-  form.append("caption", say("✂️ Background removed\n\nTransparent PNG. Your original photo is still selected for other tools.", "✂️ Фон удалён\n\nПрозрачный PNG. Исходное фото осталось выбранным для других инструментов."));
-  form.append("reply_markup", JSON.stringify({ inline_keyboard: [[{ text: "🎬 Filters", callback_data: "filters" }, { text: "⭐ Buy Premium", callback_data: "premium" }], [{ text: "✂️ Remove Background", callback_data: "ai:remove-bg" }]] }));
+  form.append("caption", say("✂️ Background removed\n\nTransparent PNG. You can keep editing this result.", "✂️ Фон удалён\n\nПрозрачный PNG. Можно продолжать редактировать этот результат."));
+  form.append("reply_markup", JSON.stringify(mainMenuMarkup(ru)));
   form.append("disable_content_type_detection", "true");
   const sent = await fetch(telegramUrl(token, "sendDocument"), { method: "POST", body: form });
   const data = await sent.json();
   if (!data.ok) throw new Error(data.description || "Unable to send result");
+  const newId = data.result?.document?.file_id;
+  if (newId && env.DB) await env.DB.prepare("INSERT INTO source_images (telegram_id,file_id,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET file_id=excluded.file_id,updated_at=CURRENT_TIMESTAMP").bind(String(chatId), newId).run();
 }
 async function adminPanel(env, token, chatId) {
   if (!isAdmin(chatId, env)) return false;
